@@ -8,6 +8,7 @@ from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia
 
 import mimetypes
 import uuid
+import secrets
 
 import uvicorn
 from fastapi import FastAPI, Response, HTTPException
@@ -35,21 +36,20 @@ async def well_known_server():
 async def federation_media_download(media_id: str):
     """
     Implements the Authenticated Media 'Location' redirect flow
-    (spec example #2) for Matrix Federation.
     """
 
-    # 1. Lookup the arbitrary URL in the dictionary
+    # Lookup the arbitrary URL in the dictionary
     redirect_url = media_store.get(media_id)
 
-    # 2. Handle 404 if media ID doesn't exist
+    # Handle 404 if media ID doesn't exist
     if not redirect_url:
         # The spec suggests falling back to existing endpoints or
         # treating it as non-existent.
         return Response(status_code=404, content="Media not found")
 
-    # 3. Construct the multipart/mixed response manually
+    # Construct the multipart/mixed response manually
     # We need a unique boundary string
-    boundary = "WrapperBoundary7MA4YWxkTrZu0gW"
+    boundary = f"boundary-{secrets.token_hex(16)}"
     CRLF = "\r\n"
 
     # Part 1: Metadata (Currently empty JSON object according to spec)
@@ -83,7 +83,7 @@ async def federation_media_download(media_id: str):
     # Combine all parts
     full_body = part_1 + part_2 + end
 
-    # 4. Return the raw Response
+    # Return the raw Response
     # Note: We must explicitly set the media_type to multipart/mixed with the boundary
     return Response(
         content=full_body,
