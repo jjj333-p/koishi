@@ -6,6 +6,90 @@ from slixmpp import stanza
 from slixmpp.componentxmpp import ComponentXMPP
 from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia
 
+import uuid
+
+import uvicorn
+from fastapi import FastAPI, Response, HTTPException
+
+app = FastAPI()
+
+media_store: dict[str, str] = {}
+
+
+@app.get("/.well-known/matrix/server")
+async def well_known_server():
+    """
+    Tells other Matrix servers where to send federation traffic.
+    This is required if your server name differs from your DNS A record
+    or if you are running on a non-standard port.
+    """
+    return {
+        # CHANGE THIS: "hostname:port" of where your federation listener is reachable.
+        # If this script is behind a reverse proxy (like Nginx) handling HTTPS on port 8448:
+        "m.server": "koishi.pain.agency:443"
+    }
+
+
+@app.get("/_matrix/federation/v1/media/download/{media_id}")
+async def federation_media_download(media_id: str):
+    """
+    Implements the Authenticated Media 'Location' redirect flow 
+    (spec example #2) for Matrix Federation.
+    """
+
+    # 1. Lookup the arbitrary URL in the dictionary
+    redirect_url = media_store.get(media_id)
+
+    # 2. Handle 404 if media ID doesn't exist
+    if not redirect_url:
+        # The spec suggests falling back to existing endpoints or
+        # treating it as non-existent.
+        return Response(status_code=404, content="Media not found")
+
+    # 3. Construct the multipart/mixed response manually
+    # We need a unique boundary string
+    boundary = "WrapperBoundary7MA4YWxkTrZu0gW"
+    CRLF = "\r\n"
+
+    # Part 1: Metadata (Currently empty JSON object according to spec)
+    # Format:
+    # --boundary
+    # Content-Type: application/json
+    # [blank line]
+    # {}
+    part_1 = (
+        f"--{boundary}{CRLF}"
+        f"Content-Type: application/json{CRLF}"
+        f"{CRLF}"
+        f"{{}}{CRLF}"
+    )
+
+    # Part 2: The Redirect Location
+    # This part has no body, only the Location header.
+    # Format:
+    # --boundary
+    # Location: <url>
+    # [blank line]
+    part_2 = (
+        f"--{boundary}{CRLF}"
+        f"Location: {redirect_url}{CRLF}"
+        f"{CRLF}"
+    )
+
+    # Closing boundary
+    end = f"--{boundary}--{CRLF}"
+
+    # Combine all parts
+    full_body = part_1 + part_2 + end
+
+    # 4. Return the raw Response
+    # Note: We must explicitly set the media_type to multipart/mixed with the boundary
+    return Response(
+        content=full_body,
+        status_code=200,
+        media_type=f"multipart/mixed; boundary={boundary}"
+    )
+
 # get login details
 with open('login.json', 'r', encoding='utf-8') as login_file:
     login = json.load(login_file)
@@ -145,6 +229,32 @@ class EchoComponent(ComponentXMPP):
             return
         bridged_stanzaid.add(stanzaid)
 
+        url: str | None = msg.get('oob', {}).get('url')
+        if url:
+
+            await matrix_side.room_send(
+                room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                message_type="m.room.message",
+                content={"msgtype": "m.text",
+                         "body": f"{msg['from']} sent a file"},
+            )
+
+            file_id = str(uuid.uuid4())
+
+            media_store[file_id] = url
+
+            await matrix_side.room_send(
+                room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.file",
+                    "body": url,
+                    "url": f"mxc://koishi.pain.agency/{file_id}"
+                },
+            )
+
+            return
+
         # You must 'await' this, otherwise the message is never sent!
         await matrix_side.room_send(
             room_id="!odwJFwanVTgIblSUtg:matrix.org",
@@ -189,12 +299,19 @@ async def main():
         pfrom=login['xmpp']['jid'],
     )
 
+    # Configure Uvicorn manually
+    config = uvicorn.Config(app, host="0.0.0.0", port=4567, log_level="info")
+    server = uvicorn.Server(config)
+
     # Run Matrix (This blocks forever, keeping the script alive)
     # Since we are inside the same asyncio loop, XMPP will keep working
     # in the background while this line runs.
     try:
         # This will run until you hit Ctrl+C
-        await nio_main()
+        await asyncio.gather(
+            nio_main(),
+            server.serve()
+        )
     except asyncio.CancelledError:
         # This handles the internal signal that asyncio uses to stop
         print("Tasks cancelled, shutting down...")
