@@ -13,9 +13,16 @@ import secrets
 import uvicorn
 from fastapi import FastAPI, Response, HTTPException
 
+import httpx
+from fastapi.responses import StreamingResponse
+
+# Initialize a client for the proxy to use
+proxy_client = httpx.AsyncClient()
+
 app = FastAPI()
 
-media_store: dict[str, str] = {}
+xmpp_to_matrix_media_lookup: dict[str, str] = {}
+matrix_to_xmpp_media_lookup: dict[str, tuple[str, str]] = {}
 
 
 @app.get("/.well-known/matrix/server")
@@ -39,7 +46,7 @@ async def federation_media_download(media_id: str):
     """
 
     # Lookup the arbitrary URL in the dictionary
-    redirect_url = media_store.get(media_id)
+    redirect_url = xmpp_to_matrix_media_lookup.get(media_id)
 
     # Handle 404 if media ID doesn't exist
     if not redirect_url:
@@ -89,6 +96,49 @@ async def federation_media_download(media_id: str):
         content=full_body,
         status_code=200,
         media_type=f"multipart/mixed; boundary={boundary}"
+    )
+
+
+async def stream_generator(access_token: str, upstream_url: str):
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    print("‼️‼️‼️‼️ upstream url:", upstream_url)
+
+    async with proxy_client.stream("GET", upstream_url, headers=headers) as resp:
+        if resp.status_code != 200:
+            # If we can't get it, yield the error so the user sees something went wrong
+            yield f"Error from Matrix Server: {resp.status_code}".encode()
+            return
+
+        # Stream the file chunks
+        async for chunk in resp.aiter_bytes():
+            yield chunk
+
+
+@app.get("/matrix-proxy/{media_id}/{file_name}")
+async def matrix_proxy(media_id: str, file_name: str):
+    # 1. Get the Home Server URL and Access Token from your running bot
+    if not matrix_side or not matrix_side.access_token:
+        return Response(status_code=503, content="Bridge not logged in yet")
+
+    # 2. Construct the upstream URL to the actual Matrix media repo
+    #    (Using the homeserver URL from your login config)
+    homeserver_url = login['matrix']['domain']
+    if not homeserver_url.startswith("http"):
+        homeserver_url = f"https://{homeserver_url}"
+
+    mxc: tuple[str, str] = matrix_to_xmpp_media_lookup.get(media_id)
+    if mxc is None:
+        return Response(status_code=404, content="Media not found")
+
+    server_name, mxc_id = mxc
+    upstream_url: str = f"{homeserver_url}/_matrix/client/v1/media/download/{server_name}/{mxc_id}"
+
+    return StreamingResponse(
+        stream_generator(matrix_side.access_token, upstream_url),
+        media_type="application/octet-stream"
     )
 
 # get login details
@@ -148,7 +198,13 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
     bridged_jids.add(jid)
     bridged_jnics.add(event.sender)
 
-    url: str = f"{login['matrix']['domain']}/_matrix/media/v3/download/{event.url[6:]}/{event.body}"
+    media_id: str = str(uuid.uuid4())
+    server, mxc_id = event.url.split('/')[-2:]
+    matrix_to_xmpp_media_lookup[media_id] = (server, mxc_id)
+
+    filename: str = event.body.split('/')[-1]
+
+    url: str = f"https://{login['http_domain']}/matrix-proxy/{media_id}/{filename}"
 
     # boilerplate message obj
     message: stanza.Message = xmpp_side.make_message(
@@ -247,7 +303,7 @@ class EchoComponent(ComponentXMPP):
 
             file_id = str(uuid.uuid4())
 
-            media_store[file_id] = url
+            xmpp_to_matrix_media_lookup[file_id] = url
 
             await matrix_side.room_send(
                 room_id="!odwJFwanVTgIblSUtg:matrix.org",
