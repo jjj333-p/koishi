@@ -22,7 +22,7 @@ proxy_client = httpx.AsyncClient()
 app = FastAPI()
 
 xmpp_to_matrix_media_lookup: dict[str, str] = {}
-matrix_to_xmpp_media_lookup: dict[str, tuple[str, str]] = {}
+matrix_to_xmpp_media_lookup: dict[str, tuple[str, str, str]] = {}
 
 
 @app.get("/.well-known/matrix/server")
@@ -133,12 +133,12 @@ async def matrix_proxy(media_id: str, file_name: str):
     if mxc is None:
         return Response(status_code=404, content="Media not found")
 
-    server_name, mxc_id = mxc
+    server_name, mxc_id, mime_type = mxc
     upstream_url: str = f"{homeserver_url}/_matrix/client/v1/media/download/{server_name}/{mxc_id}"
 
     return StreamingResponse(
         stream_generator(matrix_side.access_token, upstream_url),
-        media_type="application/octet-stream"
+        media_type=mime_type
     )
 
 # get login details
@@ -200,9 +200,9 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     media_id: str = str(uuid.uuid4())
     server, mxc_id = event.url.split('/')[-2:]
-    matrix_to_xmpp_media_lookup[media_id] = (server, mxc_id)
-
     filename: str = event.body.split('/')[-1]
+    mime_type: str = str(mimetypes.guess_type(filename))
+    matrix_to_xmpp_media_lookup[media_id] = (server, mxc_id, mime_type)
 
     url: str = f"https://{login['http_domain']}/matrix-proxy/{media_id}/{filename}"
 
