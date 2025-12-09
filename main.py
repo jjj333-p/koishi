@@ -6,6 +6,7 @@ from slixmpp import stanza
 from slixmpp.componentxmpp import ComponentXMPP
 from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia
 
+import mimetypes
 import uuid
 
 import uvicorn
@@ -33,7 +34,7 @@ async def well_known_server():
 @app.get("/_matrix/federation/v1/media/download/{media_id}")
 async def federation_media_download(media_id: str):
     """
-    Implements the Authenticated Media 'Location' redirect flow 
+    Implements the Authenticated Media 'Location' redirect flow
     (spec example #2) for Matrix Federation.
     """
 
@@ -232,11 +233,16 @@ class EchoComponent(ComponentXMPP):
         url: str | None = msg.get('oob', {}).get('url')
         if url:
 
+            # xmpp clients just get this information from the url so we have to add it
+            filename: str = url.split('/')[-1]
+            mime_type, _ = mimetypes.guess_type(filename)
+            main_type, _ = mime_type.split('/')
+
             await matrix_side.room_send(
                 room_id="!odwJFwanVTgIblSUtg:matrix.org",
                 message_type="m.room.message",
                 content={"msgtype": "m.text",
-                         "body": f"{msg['from']} sent a file"},
+                         "body": f"{msg['from']} sent a(n) {mime_type}"},
             )
 
             file_id = str(uuid.uuid4())
@@ -247,9 +253,11 @@ class EchoComponent(ComponentXMPP):
                 room_id="!odwJFwanVTgIblSUtg:matrix.org",
                 message_type="m.room.message",
                 content={
-                    "msgtype": "m.file",
+                    "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
                     "body": url,
-                    "url": f"mxc://koishi.pain.agency/{file_id}"
+                    "url": f"mxc://{login['http_domain']}/{file_id}",
+                    "info": {"mimetype": mime_type},
+                    "filename:": filename
                 },
             )
 
