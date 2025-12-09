@@ -201,7 +201,7 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
     media_id: str = str(uuid.uuid4())
     server, mxc_id = event.url.split('/')[-2:]
     filename: str = event.body.split('/')[-1]
-    mime_type: str = str(mimetypes.guess_type(filename))
+    mime_type: str = mimetypes.guess_type(filename)[0]
     matrix_to_xmpp_media_lookup[media_id] = (server, mxc_id, mime_type)
 
     url: str = f"https://{login['http_domain']}/matrix-proxy/{media_id}/{filename}"
