@@ -116,7 +116,10 @@ EXCLUDED_HEADERS = {
     "trailers",
     "transfer-encoding",  # We let FastAPI manage chunking if needed
     "upgrade",
-    "host"
+    "host",
+    "server",
+    "report-to",
+    "set-cookie"
 }
 
 
