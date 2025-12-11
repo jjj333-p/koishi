@@ -19,10 +19,16 @@ from fastapi.responses import StreamingResponse
 # Initialize a client for the proxy to use
 proxy_client = httpx.AsyncClient()
 
+# connect=5.0: Wait max 5s to establish connection
+# read=300.0: Wait max 5 mins for data to arrive (or set to None for infinite)
+# write=5.0: Wait max 5s to send request
+# pool=5.0: Wait max 5s to get a connection from the pool
+timeout_config = httpx.Timeout(300.0, connect=5.0)
+
 app = FastAPI()
 
 xmpp_to_matrix_media_lookup: dict[str, str] = {}
-matrix_to_xmpp_media_lookup: dict[str, tuple[str, str, str]] = {}
+matrix_to_xmpp_media_lookup: dict[str, tuple[str, str]] = {}
 
 
 @app.get("/.well-known/matrix/server")
@@ -99,46 +105,72 @@ async def federation_media_download(media_id: str):
     )
 
 
-async def stream_generator(access_token: str, upstream_url: str):
-    headers = {
-        "Authorization": f"Bearer {access_token}"
-    }
-
-    print("‼️‼️‼️‼️ upstream url:", upstream_url)
-
-    async with proxy_client.stream("GET", upstream_url, headers=headers) as resp:
-        if resp.status_code != 200:
-            # If we can't get it, yield the error so the user sees something went wrong
-            yield f"Error from Matrix Server: {resp.status_code}".encode()
-            return
-
-        # Stream the file chunks
-        async for chunk in resp.aiter_bytes():
-            yield chunk
+# Only exclude headers that are strictly hop-by-hop connection details.
+# We KEEL Content-Length and Content-Encoding now.
+EXCLUDED_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",  # We let FastAPI manage chunking if needed
+    "upgrade",
+    "host"
+}
 
 
 @app.get("/matrix-proxy/{media_id}/{file_name}")
 async def matrix_proxy(media_id: str, file_name: str):
-    # 1. Get the Home Server URL and Access Token from your running bot
+    # Check if the bridge is logged in
     if not matrix_side or not matrix_side.access_token:
         return Response(status_code=503, content="Bridge not logged in yet")
 
-    # 2. Construct the upstream URL to the actual Matrix media repo
-    #    (Using the homeserver URL from your login config)
+    # Get the homeserver base URL
     homeserver_url = login['matrix']['domain']
     if not homeserver_url.startswith("http"):
         homeserver_url = f"https://{homeserver_url}"
 
-    mxc: tuple[str, str] = matrix_to_xmpp_media_lookup.get(media_id)
+    # Lookup the real Matrix media ID
+    mxc = matrix_to_xmpp_media_lookup.get(media_id)
     if mxc is None:
         return Response(status_code=404, content="Media not found")
 
-    server_name, mxc_id, mime_type = mxc
-    upstream_url: str = f"{homeserver_url}/_matrix/client/v1/media/download/{server_name}/{mxc_id}"
+    server_name, mxc_id = mxc
+    upstream_url = f"{homeserver_url}/_matrix/client/v1/media/download/{server_name}/{mxc_id}"
 
+    # Build the request
+    req = proxy_client.build_request(
+        "GET",
+        upstream_url,
+        headers={"Authorization": f"Bearer {matrix_side.access_token}"},
+        timeout=timeout_config
+    )
+
+    # Send request with stream=True
+    resp = await proxy_client.send(req, stream=True)
+
+    if resp.status_code in {301, 302, 307, 308}:
+        # no good way to test without hosting a server so hopefully this works
+        return Response(status_code=resp.status_code, content=resp.content)
+    elif resp.status_code != 200:
+        await resp.aclose()
+        return Response(status_code=resp.status_code, content="Upstream Error")
+
+    # Filter headers, but KEEP Content-Length
+    forwarded_headers = {
+        k: v for k, v in resp.headers.items()
+        if k.lower() not in EXCLUDED_HEADERS
+    }
+
+    # aiter_raw() yields the exact bytes from the socket (compressed or not).
+    # This guarantees the data matches the upstream Content-Length header.
     return StreamingResponse(
-        stream_generator(matrix_side.access_token, upstream_url),
-        media_type=mime_type
+        resp.aiter_raw(),
+        status_code=resp.status_code,
+        headers=forwarded_headers,
+        media_type=resp.headers.get("content-type"),
+        background=resp.aclose
     )
 
 # get login details
@@ -201,8 +233,7 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
     media_id: str = str(uuid.uuid4())
     server, mxc_id = event.url.split('/')[-2:]
     filename: str = event.body.split('/')[-1]
-    mime_type: str = mimetypes.guess_type(filename)[0]
-    matrix_to_xmpp_media_lookup[media_id] = (server, mxc_id, mime_type)
+    matrix_to_xmpp_media_lookup[media_id] = (server, mxc_id)
 
     url: str = f"https://{login['http_domain']}/matrix-proxy/{media_id}/{filename}"
 
