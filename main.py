@@ -194,6 +194,7 @@ tmp_muc_id = "chaos@group.pain.agency"  # TODO
 
 async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
+    # temporary until appservice is used
     if event.sender == login['matrix']['mxid']:
         return
 
@@ -222,6 +223,11 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
 
 async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
+
+    # temporary until appservice is used
+    if event.sender == login['matrix']['mxid']:
+        return
+
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
     # hold onto events until they can be bridged
