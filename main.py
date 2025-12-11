@@ -207,7 +207,6 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
     bridged_jids.add(jid)
     bridged_jnics.add(event.sender)
 
-    # Fix: Ensure this awaits correctly
     await xmpp_side.plugin['xep_0045'].join_muc(
         room=tmp_muc_id,
         nick=event.sender,
@@ -232,6 +231,12 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     bridged_jids.add(jid)
     bridged_jnics.add(event.sender)
+
+    await xmpp_side.plugin['xep_0045'].join_muc(
+        room=tmp_muc_id,
+        nick=event.sender,
+        pfrom=jid,
+    )
 
     media_id: str = str(uuid.uuid4())
     server, mxc_id = event.url.split('/')[-2:]
