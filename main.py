@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
+# python stdlib
 import json
 import logging
 import asyncio
-from slixmpp import stanza
-from slixmpp.componentxmpp import ComponentXMPP
-from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia
-
 import mimetypes
 import uuid
 import secrets
 
-import uvicorn
-from fastapi import FastAPI, Response, HTTPException
+# xmpp library
+from slixmpp import stanza
+from slixmpp.componentxmpp import ComponentXMPP
 
+# temporary matrix library
+from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia
+
+# make fetching shit work
 import httpx
+
+# webserver
+import uvicorn
+from fastapi import FastAPI, Response
 from fastapi.responses import StreamingResponse
 
-# Initialize a client for the proxy to use
-proxy_client = httpx.AsyncClient()
+# database
+import psycopg_pool
 
 # connect=5.0: Wait max 5s to establish connection
 # read=300.0: Wait max 5 mins for data to arrive (or set to None for infinite)
@@ -25,10 +31,21 @@ proxy_client = httpx.AsyncClient()
 # pool=5.0: Wait max 5s to get a connection from the pool
 timeout_config = httpx.Timeout(300.0, connect=5.0)
 
-app = FastAPI()
+# get login details
+with open('login.json', 'r', encoding='utf-8') as login_file:
+    login = json.load(login_file)
 
-xmpp_to_matrix_media_lookup: dict[str, str] = {}
-matrix_to_xmpp_media_lookup: dict[str, tuple[str, str]] = {}
+# create db pool, do not connect now because it has to be inside the async loop (what is python)
+db_pool = psycopg_pool.AsyncConnectionPool(
+    conninfo=login['postgresql_conn'],
+    min_size=1,
+    max_size=3,
+    open=False,
+)
+
+# Initialize a client for the proxy to use
+proxy_client = httpx.AsyncClient()
+app = FastAPI()
 
 
 @app.get("/.well-known/matrix/server")
@@ -52,7 +69,15 @@ async def federation_media_download(media_id: str):
     """
 
     # Lookup the arbitrary URL in the dictionary
-    redirect_url = xmpp_to_matrix_media_lookup.get(media_id)
+    async with db_pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            # curr.
+            await cursor.execute(
+                "select original_xmpp_media_url from media_mappings where bridged_matrix_media_id = %s",
+                (media_id,),
+            )
+            record = await cursor.fetchone()
+            redirect_url = record[0]
 
     # Handle 404 if media ID doesn't exist
     if not redirect_url:
@@ -135,11 +160,19 @@ async def matrix_proxy(media_id: str, file_name: str):
         homeserver_url = f"https://{homeserver_url}"
 
     # Lookup the real Matrix media ID
-    mxc = matrix_to_xmpp_media_lookup.get(media_id)
+    async with db_pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            # curr.
+            await cursor.execute(
+                "select original_matrix_media_id from media_mappings where bridged_xmpp_media_id = %s",
+                (media_id,),
+            )
+            record = await cursor.fetchone()
+            mxc = record[0]
     if mxc is None:
         return Response(status_code=404, content="Media not found")
 
-    server_name, mxc_id = mxc
+    _, _, server_name, mxc_id = mxc.split('/')
     upstream_url = f"{homeserver_url}/_matrix/client/v1/media/download/{server_name}/{mxc_id}"
 
     # Build the request
@@ -175,10 +208,6 @@ async def matrix_proxy(media_id: str, file_name: str):
         media_type=resp.headers.get("content-type"),
         background=resp.aclose
     )
-
-# get login details
-with open('login.json', 'r', encoding='utf-8') as login_file:
-    login = json.load(login_file)
 
 # Global variables to store instances
 xmpp_side = None
@@ -231,7 +260,7 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
     # hold onto events until they can be bridged
-    xmpp_side.session_bind_event.wait()
+    await xmpp_side.session_bind_event.wait()
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
@@ -245,9 +274,16 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
     )
 
     media_id: str = str(uuid.uuid4())
-    server, mxc_id = event.url.split('/')[-2:]
     filename: str = event.body.split('/')[-1]
-    matrix_to_xmpp_media_lookup[media_id] = (server, mxc_id)
+    try:
+        async with db_pool.connection() as conn:
+            await conn.execute(
+                "insert into media_mappings (matrix_message_id, original_matrix_media_id, bridged_xmpp_media_id) values (%s, %s, %s)",
+                (event.event_id, event.url, media_id),
+            )
+    except Exception as e:
+        print(e)
+        return
 
     url: str = f"https://{login['http_domain']}/matrix-proxy/{media_id}/{filename}"
 
@@ -348,7 +384,15 @@ class EchoComponent(ComponentXMPP):
 
             file_id = str(uuid.uuid4())
 
-            xmpp_to_matrix_media_lookup[file_id] = url
+            try:
+                async with db_pool.connection() as conn:
+                    await conn.execute(
+                        "insert into media_mappings (xmpp_message_id, original_xmpp_media_url, bridged_matrix_media_id) values (%s, %s, %s)",
+                        (stanzaid, url, file_id),
+                    )
+            except Exception as e:
+                print(e)
+                return
 
             await matrix_side.room_send(
                 room_id="!odwJFwanVTgIblSUtg:matrix.org",
@@ -388,6 +432,8 @@ async def main():
         login['xmpp']['port'],
     )
 
+    await db_pool.open()
+
     # This attaches XMPP to the event loop in the background.
     xmpp_side.connect()
 
@@ -419,7 +465,7 @@ async def main():
         # This will run until you hit Ctrl+C
         await asyncio.gather(
             nio_main(),
-            server.serve()
+            server.serve(),
         )
     except asyncio.CancelledError:
         # This handles the internal signal that asyncio uses to stop
@@ -432,6 +478,8 @@ async def main():
             # Note: Standard slixmpp disconnect() does not usually take a 'reason' argument
             await xmpp_side.disconnect()
             print("XMPP Disconnected.")
+
+        await db_pool.close()
 
 if __name__ == '__main__':
     try:
