@@ -230,7 +230,7 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
     # hold onto events until they can be bridged
-    xmpp_side.session_bind_event.wait()
+    await xmpp_side.session_bind_event.wait()
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
