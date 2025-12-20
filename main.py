@@ -430,7 +430,8 @@ class EchoComponent(ComponentXMPP):
             case ('groupchat'):
                 # ignore all puppets
                 if msg_from.resource in bridged_jnics or msg_from.bare in bridged_jids:
-                    await matrix_side.room_read_markers("!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
+                    matrix_side.room_read_markers(
+                        "!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
                     return
 
                 # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
