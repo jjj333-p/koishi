@@ -229,26 +229,54 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
+    print("waiting start")
+
     # hold onto events until they can be bridged
     await xmpp_side.session_bind_event.wait()
 
+    print("sending")
+
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    bridged_jids.add(jid)
-    bridged_jnics.add(event.sender)
+    try:
 
-    await xmpp_side.plugin['xep_0045'].join_muc(
-        room=tmp_muc_id,
-        nick=event.sender,
-        pfrom=jid,
-    )
+        if not jid in bridged_jids or event.body.startswith("!join"):
+            await xmpp_side.plugin['xep_0045'].join_muc(
+                room=tmp_muc_id,
+                nick=event.sender,
+                pfrom=jid,
+            )
 
-    xmpp_side.send_message(
-        mto=tmp_muc_id,
-        mbody=event.body,
-        mtype='groupchat',
-        mfrom=jid
-    )
+            bridged_jids.add(jid)
+            bridged_jnics.add(event.sender)
+
+        await xmpp_side.send_message(
+            mto=tmp_muc_id,
+            mbody=event.body,
+            mtype='groupchat',
+            mfrom=jid
+        )
+
+    except Exception as e:
+
+        matrix_side.room_send(
+            room_id=room.room_id,
+            message_type="m.room.message",
+            content={
+                "msgtype": "m.text",
+                "m.mentions": {
+                    "user_ids": [
+                        event.sender
+                    ]
+                },
+                "m.relates_to": {
+                    "m.in_reply_to": {
+                        "event_id": event.event_id
+                    }
+                },
+                "body": f"Could not bridge your message because of {type(e)} error:\n{e}",
+            }
+        )
 
 
 async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
@@ -264,15 +292,36 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    bridged_jids.add(jid)
-    bridged_jnics.add(event.sender)
+    if not jid in bridged_jids:
+        try:
+            await xmpp_side.plugin['xep_0045'].join_muc(
+                room=tmp_muc_id,
+                nick=event.sender,
+                pfrom=jid,
+            )
+        except Exception as e:
 
-    await xmpp_side.plugin['xep_0045'].join_muc(
-        room=tmp_muc_id,
-        nick=event.sender,
-        pfrom=jid,
-    )
+            matrix_side.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.mentions": {
+                        "user_ids": [
+                            event.sender
+                        ]
+                    },
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event.event_id
+                        }
+                    },
+                    "body": f"Could not join puppet because of {type(e)} error:\n{e}",
+                }
+            )
 
+        bridged_jids.add(jid)
+        bridged_jnics.add(event.sender)
     media_id: str = str(uuid.uuid4())
     filename: str = event.body.split('/')[-1]
     try:
