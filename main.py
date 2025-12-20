@@ -250,13 +250,23 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
             bridged_jids.add(jid)
             bridged_jnics.add(event.sender)
 
-        await xmpp_side.send_message(
+        # await xmpp_side.send_message(
+        #     mto=tmp_muc_id,
+        #     mbody=event.body,
+        #     mtype='groupchat',
+        #     mfrom=jid
+        # )
+
+        message: stanza.Message = xmpp_side.make_message(
             mto=tmp_muc_id,
             mbody=event.body,
             mtype='groupchat',
             mfrom=jid
         )
 
+        message.set_id(event.event_id)
+
+        await message.send()
     except Exception as e:
 
         matrix_side.room_send(
@@ -344,9 +354,11 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
         mfrom=jid
     )
 
+    message.set_id(event.event_id)
+
     # attach media tag
     message['oob']['url'] = url
-    message.send()
+    await message.send()
 
 
 async def nio_main() -> None:
@@ -406,64 +418,75 @@ class EchoComponent(ComponentXMPP):
         if msg_from == '':
             return
 
-        # ignore all puppets
-        if msg_from.resource in bridged_jnics or msg_from.bare in bridged_jids:
-            return
+        match(msg.get_type()):
+            case("error"):  # this doesnt seem to work
+                # TODO: look up from, should be muc jid corresponding to matrix id
+                await matrix_side.room_send(
+                    room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                    message_type="m.room.message",
+                    content={"msgtype": "m.text",
+                             "body": f"Error to {msg.get('to','{no to found}')}: {msg.get('text', 'no text found')}"},
+                )
+            case ('groupchat'):
+                # ignore all puppets
+                if msg_from.resource in bridged_jnics or msg_from.bare in bridged_jids:
+                    await matrix_side.room_read_markers("!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
+                    return
 
-        # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
-        stanzaid = msg.get('stanza_id', {}).get('id')
-        if stanzaid is None or stanzaid in bridged_stanzaid:
-            return
-        bridged_stanzaid.add(stanzaid)
+                # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
+                stanzaid = msg.get('stanza_id', {}).get('id')
+                if stanzaid is None or stanzaid in bridged_stanzaid:
+                    return
+                bridged_stanzaid.add(stanzaid)
 
-        url: str | None = msg.get('oob', {}).get('url')
-        if url:
+                url: str | None = msg.get('oob', {}).get('url')
+                if url:
 
-            # xmpp clients just get this information from the url so we have to add it
-            filename: str = url.split('/')[-1]
-            mime_type, _ = mimetypes.guess_type(filename)
-            main_type, _ = mime_type.split('/')
+                    # xmpp clients just get this information from the url so we have to add it
+                    filename: str = url.split('/')[-1]
+                    mime_type, _ = mimetypes.guess_type(filename)
+                    main_type, _ = mime_type.split('/')
 
-            await matrix_side.room_send(
-                room_id="!odwJFwanVTgIblSUtg:matrix.org",
-                message_type="m.room.message",
-                content={"msgtype": "m.text",
-                         "body": f"{msg['from']} sent a(n) {mime_type}"},
-            )
-
-            file_id = str(uuid.uuid4())
-
-            try:
-                async with db_pool.connection() as conn:
-                    await conn.execute(
-                        "insert into media_mappings (xmpp_message_id, original_xmpp_media_url, bridged_matrix_media_id) values (%s, %s, %s)",
-                        (stanzaid, url, file_id),
+                    await matrix_side.room_send(
+                        room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                        message_type="m.room.message",
+                        content={"msgtype": "m.text",
+                                 "body": f"{msg['from']} sent a(n) {mime_type}"},
                     )
-            except Exception as e:
-                print(e)
-                return
 
-            await matrix_side.room_send(
-                room_id="!odwJFwanVTgIblSUtg:matrix.org",
-                message_type="m.room.message",
-                content={
-                    "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
-                    "body": url,
-                    "url": f"mxc://{login['http_domain']}/{file_id}",
-                    "info": {"mimetype": mime_type},
-                    "filename:": filename
-                },
-            )
+                    file_id = str(uuid.uuid4())
 
-            return
+                    try:
+                        async with db_pool.connection() as conn:
+                            await conn.execute(
+                                "insert into media_mappings (xmpp_message_id, original_xmpp_media_url, bridged_matrix_media_id) values (%s, %s, %s)",
+                                (stanzaid, url, file_id),
+                            )
+                    except Exception as e:
+                        print(e)
+                        return
 
-        # You must 'await' this, otherwise the message is never sent!
-        await matrix_side.room_send(
-            room_id="!odwJFwanVTgIblSUtg:matrix.org",
-            message_type="m.room.message",
-            content={"msgtype": "m.text",
-                     "body": f"{msg['from']}:\n{msg.get('body', 'No body found !?')}"},
-        )
+                    await matrix_side.room_send(
+                        room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                        message_type="m.room.message",
+                        content={
+                            "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
+                            "body": url,
+                            "url": f"mxc://{login['http_domain']}/{file_id}",
+                            "info": {"mimetype": mime_type},
+                            "filename:": filename
+                        },
+                    )
+
+                    return
+
+                # You must 'await' this, otherwise the message is never sent!
+                await matrix_side.room_send(
+                    room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                    message_type="m.room.message",
+                    content={"msgtype": "m.text",
+                             "body": f"{msg['from']}:\n{msg.get('body', 'No body found !?')}"},
+                )
 
 
 async def main():
