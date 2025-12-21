@@ -7,6 +7,9 @@ import mimetypes
 import uuid
 import secrets
 
+# xml parsing
+import xml.etree.ElementTree as ET
+
 # xmpp library
 from slixmpp import stanza
 from slixmpp.componentxmpp import ComponentXMPP
@@ -213,6 +216,8 @@ async def matrix_proxy(media_id: str, file_name: str):
 xmpp_side = None
 matrix_side = None
 
+xmpp_side_started = asyncio.Event()
+
 # basic deduplication
 bridged_jnics: set[str] = set()
 bridged_jids: set[str] = set()
@@ -229,12 +234,8 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
-    print("waiting start")
-
     # hold onto events until they can be bridged
-    await xmpp_side.session_bind_event.wait()
-
-    print("sending")
+    await xmpp_side_started.wait()
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
@@ -250,13 +251,6 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
             bridged_jids.add(jid)
             bridged_jnics.add(event.sender)
 
-        # await xmpp_side.send_message(
-        #     mto=tmp_muc_id,
-        #     mbody=event.body,
-        #     mtype='groupchat',
-        #     mfrom=jid
-        # )
-
         message: stanza.Message = xmpp_side.make_message(
             mto=tmp_muc_id,
             mbody=event.body,
@@ -266,7 +260,8 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
         message.set_id(event.event_id)
 
-        await message.send()
+        message.send()
+
     except Exception as e:
 
         matrix_side.room_send(
@@ -298,7 +293,7 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
     # hold onto events until they can be bridged
-    await xmpp_side.session_bind_event.wait()
+    await xmpp_side_started.wait()
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
@@ -357,8 +352,9 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
     message.set_id(event.event_id)
 
     # attach media tag
+    # pylint: disable=invalid-sequence-index
     message['oob']['url'] = url
-    await message.send()
+    message.send()
 
 
 async def nio_main() -> None:
@@ -387,7 +383,10 @@ async def nio_main() -> None:
 class EchoComponent(ComponentXMPP):
     def __init__(self, jid, secret, server, port):
         ComponentXMPP.__init__(self, jid, secret, server, port)
+
+        self.add_event_handler('session_start', self.start)
         self.add_event_handler("message", self.message)
+        self.add_event_handler("message_error", self.message_error)
 
         # Register plugins
         self.register_plugin('xep_0030')
@@ -403,7 +402,27 @@ class EchoComponent(ComponentXMPP):
 
     async def start(self, event):
         self.send_presence()
+        # pylint: disable=no-member # it is apart of slixmpp
+        # await self.get_roster()
+        xmpp_side_started.set()
         print("XMPP Component Joined")
+
+    async def message_error(self, msg):
+        # TODO: look up from, should be muc jid corresponding to matrix id
+        ET.indent(msg.xml, space="  ")
+        await matrix_side.room_send(
+            room_id="!odwJFwanVTgIblSUtg:matrix.org",
+            message_type="m.room.message",
+            content={
+                "msgtype": "m.text",
+                "m.relates_to": {
+                    "m.in_reply_to": {
+                        "event_id": msg['id'],
+                    },
+                },
+                "body": str(msg)
+            },
+        )
 
     # Change 'def' to 'async def' so you can use 'await' inside
     async def message(self, msg):
@@ -419,14 +438,6 @@ class EchoComponent(ComponentXMPP):
             return
 
         match(msg.get_type()):
-            case("error"):  # this doesnt seem to work
-                # TODO: look up from, should be muc jid corresponding to matrix id
-                await matrix_side.room_send(
-                    room_id="!odwJFwanVTgIblSUtg:matrix.org",
-                    message_type="m.room.message",
-                    content={"msgtype": "m.text",
-                             "body": f"Error to {msg.get('to','{no to found}')}: {msg.get('text', 'no text found')}"},
-                )
             case ('groupchat'):
                 # ignore all puppets
                 if msg_from.resource in bridged_jnics or msg_from.bare in bridged_jids:
