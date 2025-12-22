@@ -453,8 +453,6 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     message.set_id(event.event_id)
 
-    message.send()
-
     # attach media tag
     # pylint: disable=invalid-sequence-index
     message['oob']['url'] = url
