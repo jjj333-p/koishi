@@ -15,7 +15,7 @@ from slixmpp import stanza
 from slixmpp.componentxmpp import ComponentXMPP
 
 # temporary matrix library
-from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia
+from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomSendResponse
 
 # make fetching shit work
 import httpx
@@ -223,6 +223,7 @@ bridged_jnics: set[str] = set()
 bridged_jids: set[str] = set()
 bridged_stanzaid: set[str] = set()
 
+
 tmp_muc_id = "chaos@group.pain.agency"  # TODO
 
 
@@ -251,12 +252,63 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
             bridged_jids.add(jid)
             bridged_jnics.add(event.sender)
 
-        message: stanza.Message = xmpp_side.make_message(
-            mto=tmp_muc_id,
-            mbody=event.body,
-            mtype='groupchat',
-            mfrom=jid
-        )
+        mx_reply_to_id = event.source \
+            .get('content', {}) \
+            .get("m.relates_to", {}) \
+            .get("m.in_reply_to", {}) \
+            .get("event_id", None)
+
+        result = None
+        stanza_id = None
+        content = None
+        if mx_reply_to_id:
+            try:
+                async with db_pool.connection() as conn:
+                    cursor = await conn.execute(
+                        "SELECT (xmpp_message_id, body) FROM media_mappings WHERE matrix_message_id = %s",
+                        (mx_reply_to_id,)
+                    )
+
+                    result = (await cursor.fetchone())[0]
+
+            except Exception as e:
+                print(e)
+
+        if result:
+            if len(result) > 1:
+                stanza_id, content, *_ = result
+            else:
+                stanza_id = result[0]
+
+        # if stanza_id:
+        #     # pylint: disable=invalid-sequence-index
+        #     message['reply']['id'] = stanza_id
+
+        # if content:
+        #     # pylint: disable=no-member
+        #     message['reply'].add_quoted_fallback(content)
+
+        if stanza_id:
+
+            message: stanza.Message = xmpp_side['xep_0461'].make_reply(
+                "chaos@group.pain.agency/asdf",
+                stanza_id or "",
+                fallback=content or "",
+                mto=tmp_muc_id,
+                mbody=event.body,
+                mtype='groupchat',
+                mfrom=jid,
+            )
+
+        else:
+
+            message: stanza.Message = xmpp_side.make_message(
+                mto=tmp_muc_id,
+                mbody=event.body,
+                mtype='groupchat',
+                mfrom=jid,
+
+            )
 
         message.set_id(event.event_id)
 
@@ -264,7 +316,7 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
     except Exception as e:
 
-        matrix_side.room_send(
+        await matrix_side.room_send(
             room_id=room.room_id,
             message_type="m.room.message",
             content={
@@ -341,15 +393,67 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     url: str = f"https://{login['http_domain']}/matrix-proxy/{media_id}/{filename}"
 
-    # boilerplate message obj
-    message: stanza.Message = xmpp_side.make_message(
-        mto=tmp_muc_id,
-        mbody=url,
-        mtype='groupchat',
-        mfrom=jid
-    )
+    mx_reply_to_id = event.source \
+        .get('content', {}) \
+        .get("m.relates_to", {}) \
+        .get("m.in_reply_to", {}) \
+        .get("event_id", None)
+
+    result = None
+    stanza_id = None
+    content = None
+    if mx_reply_to_id:
+        try:
+            async with db_pool.connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT (xmpp_message_id, body) FROM media_mappings WHERE matrix_message_id = %s",
+                    (mx_reply_to_id,)
+                )
+
+                result = (await cursor.fetchone())[0]
+
+        except Exception as e:
+            print(e)
+
+    if result:
+        if len(result) > 1:
+            stanza_id, content, *_ = result
+        else:
+            stanza_id = result[0]
+
+    # if stanza_id:
+    #     # pylint: disable=invalid-sequence-index
+    #     message['reply']['id'] = stanza_id
+
+    # if content:
+    #     # pylint: disable=no-member
+    #     message['reply'].add_quoted_fallback(content)
+
+    if stanza_id:
+
+        message: stanza.Message = xmpp_side['xep_0461'].make_reply(
+            "chaos@group.pain.agency/asdf",
+            stanza_id or "",
+            fallback=content or "",
+            mto=tmp_muc_id,
+            mbody=url,
+            mtype='groupchat',
+            mfrom=jid,
+        )
+
+    else:
+
+        message: stanza.Message = xmpp_side.make_message(
+            mto=tmp_muc_id,
+            mbody=url,
+            mtype='groupchat',
+            mfrom=jid,
+
+        )
 
     message.set_id(event.event_id)
+
+    message.send()
 
     # attach media tag
     # pylint: disable=invalid-sequence-index
@@ -395,6 +499,7 @@ class EchoComponent(ComponentXMPP):
         self.register_plugin('xep_0199')
         self.register_plugin('xep_0045')
         self.register_plugin('xep_0461')
+        self.register_plugin('xep_0428')
         self.register_plugin('xep_0363')
         # (Unique and Stable Stanza IDs)
         self.register_plugin('xep_0359')
@@ -441,9 +546,12 @@ class EchoComponent(ComponentXMPP):
             case ('groupchat'):
                 # ignore all puppets
                 if msg_from.resource in bridged_jnics or msg_from.bare in bridged_jids:
-                    matrix_side.room_read_markers(
-                        "!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
-                    return
+                    try:
+                        matrix_side.room_read_markers(
+                            "!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
+                        return
+                    except Exception as _:
+                        return
 
                 # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
                 stanzaid = msg.get('stanza_id', {}).get('id')
@@ -452,19 +560,46 @@ class EchoComponent(ComponentXMPP):
                 bridged_stanzaid.add(stanzaid)
 
                 url: str | None = msg.get('oob', {}).get('url')
-                if url:
+                if not url:
+                    try:
+                        # You must 'await' this, otherwise the message is never sent!
+                        resp: RoomSendResponse = await matrix_side.room_send(
+                            room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                            message_type="m.room.message",
+                            content={"msgtype": "m.text",
+                                     "body": f"{msg['from']}:\n{msg.get('body', 'No body found !?')}"},
+                        )
+                    except Exception as e:
+                        print(e)
+                        return
+
+                    try:
+                        async with db_pool.connection() as conn:
+                            await conn.execute(
+                                "insert into media_mappings (xmpp_message_id, matrix_message_id) values (%s, %s)",
+                                (stanzaid, resp.event_id),
+                            )
+                    except Exception as e:
+                        print(e)
+                        return
+
+                else:
 
                     # xmpp clients just get this information from the url so we have to add it
                     filename: str = url.split('/')[-1]
                     mime_type, _ = mimetypes.guess_type(filename)
                     main_type, _ = mime_type.split('/')
 
-                    await matrix_side.room_send(
-                        room_id="!odwJFwanVTgIblSUtg:matrix.org",
-                        message_type="m.room.message",
-                        content={"msgtype": "m.text",
-                                 "body": f"{msg['from']} sent a(n) {mime_type}"},
-                    )
+                    try:
+                        resp: RoomSendResponse = await matrix_side.room_send(
+                            room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                            message_type="m.room.message",
+                            content={"msgtype": "m.text",
+                                     "body": f"{msg['from']} sent a(n) {mime_type}"},
+                        )
+                    except Exception as e:
+                        print(e)
+                        return
 
                     file_id = str(uuid.uuid4())
 
@@ -478,27 +613,33 @@ class EchoComponent(ComponentXMPP):
                         print(e)
                         return
 
-                    await matrix_side.room_send(
-                        room_id="!odwJFwanVTgIblSUtg:matrix.org",
-                        message_type="m.room.message",
-                        content={
-                            "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
-                            "body": url,
-                            "url": f"mxc://{login['http_domain']}/{file_id}",
-                            "info": {"mimetype": mime_type},
-                            "filename:": filename
-                        },
-                    )
+                    try:
+                        resp: RoomSendResponse = await matrix_side.room_send(
+                            room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                            message_type="m.room.message",
+                            content={
+                                "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
+                                "body": url,
+                                "url": f"mxc://{login['http_domain']}/{file_id}",
+                                "info": {"mimetype": mime_type},
+                                "filename:": filename
+                            },
+                        )
+                    except Exception as e:
+                        print(e)
+                        return
 
-                    return
+                    try:
+                        async with db_pool.connection() as conn:
+                            await conn.execute(
+                                "UPDATE media_mappings SET matrix_message_id = %s WHERE xmpp_message_id = %s",
+                                (resp.event_id, stanzaid)
+                            )
+                    except Exception as e:
+                        print(e)
+                        return
 
-                # You must 'await' this, otherwise the message is never sent!
-                await matrix_side.room_send(
-                    room_id="!odwJFwanVTgIblSUtg:matrix.org",
-                    message_type="m.room.message",
-                    content={"msgtype": "m.text",
-                             "body": f"{msg['from']}:\n{msg.get('body', 'No body found !?')}"},
-                )
+                print(resp)
 
 
 async def main():
