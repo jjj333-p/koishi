@@ -519,7 +519,7 @@ class EchoComponent(ComponentXMPP):
         self.register_plugin('xep_0359')
         self.register_plugin('xep_0066')  # media
 
-    async def start(self, event):
+    async def start(self, _):
         self.send_presence()
         # pylint: disable=no-member # it is apart of slixmpp
         # await self.get_roster()
@@ -615,7 +615,7 @@ class EchoComponent(ComponentXMPP):
                     end = int(fallback_range.get('end', 0))
 
                     # sanity check ranges
-                    if not end > start or not start < len(b) or not end < len(b):
+                    if end <= start or not start < len(b) or not end < len(b):
                         body = b
                     else:
                         # cut around range
