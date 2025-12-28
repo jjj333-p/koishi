@@ -224,6 +224,8 @@ bridged_jids: set[str] = set()
 bridged_stanzaid: set[str] = set()
 bridged_mx_eventid: set[str] = set()
 
+# lazy
+cached_matrix_nick: dict[str, str] = {}
 
 tmp_muc_id = "chaos@group.pain.agency"  # TODO
 
@@ -252,11 +254,13 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    if not jid in bridged_jids or event.body.startswith("!join"):
+    new_matrix_nick = room.user_name(event.sender)
+
+    if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids or event.body.startswith("!join"):
         try:
             await xmpp_side.plugin['xep_0045'].join_muc(
                 room=tmp_muc_id,
-                nick=event.sender,
+                nick=new_matrix_nick,
                 pfrom=jid,
             )
         except Exception as e:
@@ -281,7 +285,7 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
             )
 
         bridged_jids.add(jid)
-        bridged_jnics.add(event.sender)
+        bridged_jnics.add(new_matrix_nick)
 
     mx_reply_to_id = event.source \
         .get('content', {}) \
@@ -372,11 +376,13 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    if not jid in bridged_jids:
+    new_matrix_nick = room.user_name(event.sender)
+
+    if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids:
         try:
             await xmpp_side.plugin['xep_0045'].join_muc(
                 room=tmp_muc_id,
-                nick=event.sender,
+                nick=new_matrix_nick,
                 pfrom=jid,
             )
         except Exception as e:
@@ -401,7 +407,7 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
             )
 
         bridged_jids.add(jid)
-        bridged_jnics.add(event.sender)
+        bridged_jnics.add(new_matrix_nick)
     media_id: str = str(uuid.uuid4())
     filename: str = event.body.split('/')[-1]
     try:
