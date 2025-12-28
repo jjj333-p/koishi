@@ -432,14 +432,6 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
         else:
             stanza_id = result[0]
 
-    # if stanza_id:
-    #     # pylint: disable=invalid-sequence-index
-    #     message['reply']['id'] = stanza_id
-
-    # if content:
-    #     # pylint: disable=no-member
-    #     message['reply'].add_quoted_fallback(content)
-
     if stanza_id:
 
         message: stanza.Message = xmpp_side['xep_0461'].make_reply(
