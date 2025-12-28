@@ -655,11 +655,15 @@ class EchoComponent(ComponentXMPP):
                             content={
                                 "msgtype": "m.text",
                                 "body": f"{msg['from']}:\n{body}",
-                                "m.relates_to": {
-                                    "m.in_reply_to": {
-                                        "event_id": matrix_replyto_id
-                                    },
-                                },
+                                **(
+                                    {
+                                        "m.relates_to": {
+                                            "m.in_reply_to": {
+                                                "event_id": matrix_replyto_id
+                                            },
+                                        },
+                                    } if matrix_replyto_id else {}
+                                ),
                             }
                         )
                     except Exception as e:
@@ -690,11 +694,15 @@ class EchoComponent(ComponentXMPP):
                             content={
                                 "msgtype": "m.text",
                                 "body": f"{msg['from']} sent a(n) {mime_type}",
-                                "m.relates_to": {
-                                    "m.in_reply_to": {
-                                        "event_id": matrix_replyto_id
-                                    },
-                                },
+                                **(
+                                    {
+                                        "m.relates_to": {
+                                            "m.in_reply_to": {
+                                                "event_id": matrix_replyto_id
+                                            },
+                                        },
+                                    } if matrix_replyto_id else {}
+                                ),
                             },
                         )
                     except Exception as e:
