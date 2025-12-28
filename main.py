@@ -16,7 +16,7 @@ from slixmpp import stanza
 from slixmpp.componentxmpp import ComponentXMPP
 
 # temporary matrix library
-from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomSendResponse
+from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomSendResponse, RoomMessageNotice
 
 # make fetching shit work
 import httpx
@@ -487,7 +487,8 @@ async def nio_main() -> None:
 
     matrix_side = AsyncClient(
         login['matrix']['domain'], login['matrix']['mxid'])
-    matrix_side.add_event_callback(message_callback, RoomMessageText)
+    matrix_side.add_event_callback(
+        message_callback, (RoomMessageText, RoomMessageNotice))
     matrix_side.add_event_callback(media_callback, RoomMessageMedia)
 
     await matrix_side.login(login['matrix']['password'])
