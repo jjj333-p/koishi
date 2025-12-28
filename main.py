@@ -507,7 +507,7 @@ class EchoComponent(ComponentXMPP):
         self.add_event_handler("message_error", self.message_error)
 
         # Register plugins
-        self.register_plugin('xep_0030')
+        self.register_plugin('xep_0030')  # disco
         self.register_plugin('xep_0004')
         self.register_plugin('xep_0060')
         self.register_plugin('xep_0199')
@@ -524,6 +524,17 @@ class EchoComponent(ComponentXMPP):
         # pylint: disable=no-member # it is apart of slixmpp
         # await self.get_roster()
         xmpp_side_started.set()
+
+        self['xep_0030'].add_identity(
+            category='gateway',
+            itype='matrix',      # This triggers the Matrix icon in clients
+            name='Koishi Matrix Bridge'
+        )
+
+        # Always register disco#info and disco#items
+        self['xep_0030'].add_feature('http://jabber.org/protocol/disco#info')
+        self['xep_0030'].add_feature('http://jabber.org/protocol/disco#items')
+
         print("XMPP Component Joined")
 
     async def message_error(self, msg):
