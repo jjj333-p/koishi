@@ -240,80 +240,91 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    try:
-
-        if not jid in bridged_jids or event.body.startswith("!join"):
+    if not jid in bridged_jids or event.body.startswith("!join"):
+        try:
             await xmpp_side.plugin['xep_0045'].join_muc(
                 room=tmp_muc_id,
                 nick=event.sender,
                 pfrom=jid,
             )
+        except Exception as e:
 
-            bridged_jids.add(jid)
-            bridged_jnics.add(event.sender)
-
-        mx_reply_to_id = event.source \
-            .get('content', {}) \
-            .get("m.relates_to", {}) \
-            .get("m.in_reply_to", {}) \
-            .get("event_id", None)
-
-        result = None
-        stanza_id = None
-        content = None
-        if mx_reply_to_id:
-            try:
-                async with db_pool.connection() as conn:
-                    cursor = await conn.execute(
-                        "SELECT (xmpp_message_id, body) FROM media_mappings WHERE matrix_message_id = %s",
-                        (mx_reply_to_id,)
-                    )
-
-                    result = (await cursor.fetchone())[0]
-
-            except Exception as e:
-                print(e)
-
-        if result:
-            if len(result) > 1:
-                stanza_id, content, *_ = result
-            else:
-                stanza_id = result[0]
-
-        # if stanza_id:
-        #     # pylint: disable=invalid-sequence-index
-        #     message['reply']['id'] = stanza_id
-
-        # if content:
-        #     # pylint: disable=no-member
-        #     message['reply'].add_quoted_fallback(content)
-
-        if stanza_id:
-
-            message: stanza.Message = xmpp_side['xep_0461'].make_reply(
-                "chaos@group.pain.agency/asdf",
-                stanza_id or "",
-                fallback=content or "",
-                mto=tmp_muc_id,
-                mbody=event.body,
-                mtype='groupchat',
-                mfrom=jid,
+            await matrix_side.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.mentions": {
+                        "user_ids": [
+                            event.sender
+                        ]
+                    },
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event.event_id
+                        }
+                    },
+                    "body": f"Could not join puppet because of {type(e)} error:\n{e}",
+                }
             )
 
+        bridged_jids.add(jid)
+        bridged_jnics.add(event.sender)
+
+    mx_reply_to_id = event.source \
+        .get('content', {}) \
+        .get("m.relates_to", {}) \
+        .get("m.in_reply_to", {}) \
+        .get("event_id", None)
+
+    result = None
+    stanza_id = None
+    content = None
+    if mx_reply_to_id:
+        try:
+            async with db_pool.connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT (xmpp_message_id, body) FROM media_mappings WHERE matrix_message_id = %s",
+                    (mx_reply_to_id,)
+                )
+
+                result = (await cursor.fetchone())[0]
+
+        except Exception as e:
+            print(e)
+
+    if result:
+        if len(result) > 1:
+            stanza_id, content, *_ = result
         else:
+            stanza_id = result[0]
 
-            message: stanza.Message = xmpp_side.make_message(
-                mto=tmp_muc_id,
-                mbody=event.body,
-                mtype='groupchat',
-                mfrom=jid,
+    if stanza_id:
 
-            )
+        message: stanza.Message = xmpp_side['xep_0461'].make_reply(
+            "chaos@group.pain.agency/asdf",
+            stanza_id or "",
+            fallback=content or "",
+            mto=tmp_muc_id,
+            mbody=event.body,
+            mtype='groupchat',
+            mfrom=jid,
+        )
 
-        message.set_id(event.event_id)
+    else:
 
+        message: stanza.Message = xmpp_side.make_message(
+            mto=tmp_muc_id,
+            mbody=event.body,
+            mtype='groupchat',
+            mfrom=jid,
+
+        )
+
+    message.set_id(event.event_id)
+
+    try:
         message.send()
-
     except Exception as e:
 
         await matrix_side.room_send(
