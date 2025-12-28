@@ -586,6 +586,47 @@ class EchoComponent(ComponentXMPP):
                     except Exception as _:
                         return
 
+                xmpp_replyto_id = msg.get('reply', {}).get('id')
+                matrix_replyto_id = None
+                result = None
+                if xmpp_replyto_id:
+                    try:
+                        async with db_pool.connection() as conn:
+                            cursor = await conn.execute(
+                                "SELECT (matrix_message_id) FROM media_mappings WHERE xmpp_message_id = %s",
+                                (xmpp_replyto_id,)
+                            )
+
+                            result = await cursor.fetchone()
+
+                    except Exception as e:
+                        print(e)
+
+                if result:
+                    matrix_replyto_id = result[0]
+
+                fallback_range = msg['fallback']['body']
+                b = msg.get('body', 'No body found !?')
+                if fallback_range == '':
+                    body = b
+                else:
+                    # get start and end of the fallback
+                    start = int(fallback_range.get('start', 0))
+                    end = int(fallback_range.get('end', 0))
+
+                    # sanity check ranges
+                    if not end > start or not start < len(b) or not end < len(b):
+                        body = b
+                    else:
+                        # cut around range
+                        if start > 0:
+                            part1 = b[:start]
+                        else:
+                            part1 = ''
+                        part2 = b[end:]
+
+                        body = part1 + part2
+
                 url: str | None = msg.get('oob', {}).get('url')
                 if not url:
                     try:
@@ -593,8 +634,15 @@ class EchoComponent(ComponentXMPP):
                         resp: RoomSendResponse = await matrix_side.room_send(
                             room_id="!odwJFwanVTgIblSUtg:matrix.org",
                             message_type="m.room.message",
-                            content={"msgtype": "m.text",
-                                     "body": f"{msg['from']}:\n{msg.get('body', 'No body found !?')}"},
+                            content={
+                                "msgtype": "m.text",
+                                "body": f"{msg['from']}:\n{body}",
+                                "m.relates_to": {
+                                    "m.in_reply_to": {
+                                        "event_id": matrix_replyto_id
+                                    },
+                                },
+                            }
                         )
                     except Exception as e:
                         print(e)
@@ -621,8 +669,15 @@ class EchoComponent(ComponentXMPP):
                         resp: RoomSendResponse = await matrix_side.room_send(
                             room_id="!odwJFwanVTgIblSUtg:matrix.org",
                             message_type="m.room.message",
-                            content={"msgtype": "m.text",
-                                     "body": f"{msg['from']} sent a(n) {mime_type}"},
+                            content={
+                                "msgtype": "m.text",
+                                "body": f"{msg['from']} sent a(n) {mime_type}",
+                                "m.relates_to": {
+                                    "m.in_reply_to": {
+                                        "event_id": matrix_replyto_id
+                                    },
+                                },
+                            },
                         )
                     except Exception as e:
                         print(e)
@@ -646,7 +701,7 @@ class EchoComponent(ComponentXMPP):
                             message_type="m.room.message",
                             content={
                                 "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
-                                "body": url,
+                                "body": body,
                                 "url": f"mxc://{login['http_domain']}/{file_id}",
                                 "info": {"mimetype": mime_type},
                                 "filename:": filename
