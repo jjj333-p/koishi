@@ -6,6 +6,7 @@ import asyncio
 import mimetypes
 import uuid
 import secrets
+import urllib
 
 # xml parsing
 import xml.etree.ElementTree as ET
@@ -409,7 +410,7 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
         bridged_jids.add(jid)
         bridged_jnics.add(new_matrix_nick)
     media_id: str = str(uuid.uuid4())
-    filename: str = event.body.split('/')[-1]
+    filename: str = urllib.parse.quote_plus(event.body.split('/')[-1])
     try:
         async with db_pool.connection() as conn:
             await conn.execute(
