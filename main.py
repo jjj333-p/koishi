@@ -222,6 +222,7 @@ xmpp_side_started = asyncio.Event()
 bridged_jnics: set[str] = set()
 bridged_jids: set[str] = set()
 bridged_stanzaid: set[str] = set()
+bridged_mx_eventid: set[str] = set()
 
 
 tmp_muc_id = "chaos@group.pain.agency"  # TODO
@@ -231,6 +232,17 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
     # temporary until appservice is used
     if event.sender == login['matrix']['mxid']:
+        return
+
+    try:
+        async with db_pool.connection() as conn:
+            await conn.execute(
+                "insert into media_mappings (matrix_message_id) values (%s)",
+                (event.event_id,),
+            )
+        bridged_mx_eventid.add(event.event_id)
+    except Exception as e:
+        print(e)
         return
 
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
@@ -398,6 +410,7 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
                 "insert into media_mappings (matrix_message_id, original_matrix_media_id, bridged_xmpp_media_id) values (%s, %s, %s)",
                 (event.event_id, event.url, media_id),
             )
+        bridged_mx_eventid.add(event.event_id)
     except Exception as e:
         print(e)
         return
@@ -545,6 +558,25 @@ class EchoComponent(ComponentXMPP):
 
         match(msg.get_type()):
             case ('groupchat'):
+
+                # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
+                stanzaid = msg.get('stanza_id', {}).get('id')
+                if stanzaid is None or stanzaid in bridged_stanzaid:
+                    return
+                bridged_stanzaid.add(stanzaid)
+
+                if msg.get('id', '') in bridged_mx_eventid:
+                    try:
+                        async with db_pool.connection() as conn:
+                            await conn.execute(
+                                "UPDATE media_mappings SET xmpp_message_id = %s WHERE matrix_message_id = %s",
+                                (stanzaid, msg.get('id'))
+                            )
+                        bridged_mx_eventid.remove(msg.get('id', ''))
+                    except Exception as e:
+                        print(e)
+                        return
+
                 # ignore all puppets
                 if msg_from.resource in bridged_jnics or msg_from.bare in bridged_jids:
                     try:
@@ -553,12 +585,6 @@ class EchoComponent(ComponentXMPP):
                         return
                     except Exception as _:
                         return
-
-                # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
-                stanzaid = msg.get('stanza_id', {}).get('id')
-                if stanzaid is None or stanzaid in bridged_stanzaid:
-                    return
-                bridged_stanzaid.add(stanzaid)
 
                 url: str | None = msg.get('oob', {}).get('url')
                 if not url:
