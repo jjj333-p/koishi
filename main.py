@@ -529,8 +529,8 @@ class EchoComponent(ComponentXMPP):
 
     async def start(self, _):
         self.send_presence()
-        # pylint: disable=no-member # it is apart of slixmpp
-        # await self.get_roster()
+
+        # set started flag for async loop
         xmpp_side_started.set()
 
         self['xep_0030'].add_identity(
