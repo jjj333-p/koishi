@@ -515,17 +515,15 @@ class EchoComponent(ComponentXMPP):
         self.add_event_handler("message_error", self.message_error)
 
         # Register plugins
-        self.register_plugin('xep_0030')  # disco
-        self.register_plugin('xep_0004')
-        self.register_plugin('xep_0060')
-        self.register_plugin('xep_0199')
-        self.register_plugin('xep_0045')
-        self.register_plugin('xep_0461')
-        self.register_plugin('xep_0428')
-        self.register_plugin('xep_0363')
-        # (Unique and Stable Stanza IDs)
-        self.register_plugin('xep_0359')
-        self.register_plugin('xep_0066')  # media
+        self.register_plugin('xep_0030')  # Service Discovery (Disco)
+        self.register_plugin('xep_0004')  # Data Forms
+        self.register_plugin('xep_0060')  # Publish-Subscribe
+        self.register_plugin('xep_0199')  # XMPP Ping
+        self.register_plugin('xep_0045')  # Multi-User Chat (MUC)
+        self.register_plugin('xep_0461')  # Message Replies
+        self.register_plugin('xep_0428')  # Fallback Indication
+        self.register_plugin('xep_0359')  # Unique and Stable Stanza IDs
+        self.register_plugin('xep_0066')  # Out of Band Data
 
     async def start(self, _):
         self.send_presence()
