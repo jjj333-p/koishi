@@ -52,6 +52,11 @@ proxy_client = httpx.AsyncClient()
 app = FastAPI()
 
 
+def sanitize_resource(resource, replacement='_'):
+    """Strip to ASCII-safe characters only."""
+    return ''.join(char if ord(char) < 128 else '_' for char in resource)
+
+
 @app.get("/.well-known/matrix/server")
 async def well_known_server():
     """
@@ -255,7 +260,7 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    new_matrix_nick = room.user_name(event.sender)
+    new_matrix_nick = sanitize_resource(room.user_name(event.sender))
 
     if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids or event.body.startswith("!join"):
         try:
@@ -284,6 +289,8 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
                     "body": f"Could not join puppet because of {type(e)} error:\n{e}",
                 }
             )
+
+            return
 
         bridged_jids.add(jid)
         bridged_jnics.add(new_matrix_nick)
@@ -377,7 +384,7 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    new_matrix_nick = room.user_name(event.sender)
+    new_matrix_nick = sanitize_resource(room.user_name(event.sender))
 
     if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids:
         try:
@@ -388,7 +395,7 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
             )
         except Exception as e:
 
-            matrix_side.room_send(
+            await matrix_side.room_send(
                 room_id=room.room_id,
                 message_type="m.room.message",
                 content={
@@ -406,6 +413,8 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
                     "body": f"Could not join puppet because of {type(e)} error:\n{e}",
                 }
             )
+
+            return
 
         bridged_jids.add(jid)
         bridged_jnics.add(new_matrix_nick)
