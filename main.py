@@ -54,7 +54,7 @@ app = FastAPI()
 
 def sanitize_resource(resource, replacement='_'):
     """Strip to ASCII-safe characters only."""
-    return ''.join(char if ord(char) < 128 else '_' for char in resource)
+    return ''.join(char if ord(char) < 128 else replacement for char in resource)
 
 
 @app.get("/.well-known/matrix/server")
