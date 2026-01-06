@@ -7,12 +7,13 @@ import mimetypes
 import uuid
 import secrets
 import urllib
+import string
 
 # xml parsing
 import xml.etree.ElementTree as ET
 
 # xmpp library
-from slixmpp import stanza
+from slixmpp import stanza, JID, InvalidJID
 from slixmpp.componentxmpp import ComponentXMPP
 
 # temporary matrix library
@@ -52,9 +53,22 @@ proxy_client = httpx.AsyncClient()
 app = FastAPI()
 
 
-def sanitize_resource(resource, replacement='_'):
-    """Strip to ASCII-safe characters only."""
-    return ''.join(char if ord(char) < 128 else replacement for char in resource)
+def escape_nickname(muc_jid: JID, nickname: str) -> JID:
+    jid = JID(muc_jid)
+
+    try:
+        jid.resource = nickname
+    except InvalidJID:
+        nickname = nickname.encode("punycode").decode()
+        try:
+            jid.resource = nickname
+        except InvalidJID:
+            # at this point there still might be control chars
+            jid.resource = "".join(
+                x for x in nickname if x in string.printable
+            ) + f"-koishi-{hash(nickname)}"
+
+    return jid
 
 
 @app.get("/.well-known/matrix/server")
@@ -260,7 +274,8 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    new_matrix_nick = sanitize_resource(room.user_name(event.sender))
+    new_matrix_nick = escape_nickname(
+        "chaos@group.pain.agency", room.user_name(event.sender)).resource
 
     if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids or event.body.startswith("!join"):
         try:
@@ -384,7 +399,8 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    new_matrix_nick = sanitize_resource(room.user_name(event.sender))
+    new_matrix_nick = escape_nickname(
+        "chaos@group.pain.agency", room.user_name(event.sender)).resource
 
     if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids:
         try:
