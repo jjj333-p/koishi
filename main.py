@@ -678,7 +678,7 @@ class EchoComponent(ComponentXMPP):
                             message_type="m.room.message",
                             content={
                                 "msgtype": "m.text",
-                                "body": f"{msg['from']}:\n{body}",
+                                "body": f"{msg['from'].resource}:\n{body}",
                                 **(
                                     {
                                         "m.relates_to": {
@@ -709,6 +709,8 @@ class EchoComponent(ComponentXMPP):
                     # xmpp clients just get this information from the url so we have to add it
                     filename: str = url.split('/')[-1]
                     mime_type, _ = mimetypes.guess_type(filename)
+                    if mime_type is None:
+                        mime_type = "application/octet-stream"
                     main_type, _ = mime_type.split('/')
 
                     try:
@@ -717,7 +719,7 @@ class EchoComponent(ComponentXMPP):
                             message_type="m.room.message",
                             content={
                                 "msgtype": "m.text",
-                                "body": f"{msg['from']} sent a(n) {mime_type}",
+                                "body": f"{msg['from'].resource} sent a(n) {mime_type}",
                                 **(
                                     {
                                         "m.relates_to": {
