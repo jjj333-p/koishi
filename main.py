@@ -30,6 +30,9 @@ from fastapi.responses import StreamingResponse
 # database
 import psycopg_pool
 
+# collect background tasks
+background_tasks = set()
+
 # connect=5.0: Wait max 5s to establish connection
 # read=300.0: Wait max 5 mins for data to arrive (or set to None for infinite)
 # write=5.0: Wait max 5s to send request
@@ -247,10 +250,13 @@ bridged_mx_eventid: set[str] = set()
 # lazy
 cached_matrix_nick: dict[str, str] = {}
 
+# dont join the same puppet many times
+is_joining: dict[str, asyncio.Event] = {}
+
 tmp_muc_id = "chaos@group.pain.agency"  # TODO
 
 
-async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
+async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
 
     # temporary until appservice is used
     if event.sender == login['matrix']['mxid']:
@@ -277,14 +283,30 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
     new_matrix_nick = escape_nickname(
         "chaos@group.pain.agency", room.user_name(event.sender)).resource
 
+    # dont proceede if a join is in progress
+    if is_joining.get(jid) is not None:
+        is_joining[jid].wait()
+
     if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids or event.body.startswith("!join"):
+
+        # avoid duplicate joins
+        asyncio_event = is_joining.get(jid)
+        if asyncio_event is None:
+            is_joining[jid] = asyncio_event = asyncio.Event()
+        asyncio_event.clear()
+
         try:
             await xmpp_side.plugin['xep_0045'].join_muc(
                 room=tmp_muc_id,
                 nick=new_matrix_nick,
                 pfrom=jid,
             )
+
+            asyncio_event.set()
+
         except Exception as e:
+
+            asyncio_event.set()
 
             await matrix_side.room_send(
                 room_id=room.room_id,
@@ -386,7 +408,14 @@ async def message_callback(room: MatrixRoom, event: RoomMessageText) -> None:
         )
 
 
-async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
+async def message_callback(room: MatrixRoom, event) -> None:
+    """actually coroutine this shit"""
+    task: asyncio.Task = asyncio.create_task(message_handler(room, event))
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+
+async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     # temporary until appservice is used
     if event.sender == login['matrix']['mxid']:
@@ -402,14 +431,30 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
     new_matrix_nick = escape_nickname(
         "chaos@group.pain.agency", room.user_name(event.sender)).resource
 
+    # dont proceede if a join is in progress
+    if is_joining.get(jid) is not None:
+        is_joining[jid].wait()
+
     if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids:
+
+        # avoid duplicate joins
+        asyncio_event = is_joining.get(jid)
+        if asyncio_event is None:
+            is_joining[jid] = asyncio_event = asyncio.Event()
+        asyncio_event.clear()
+
         try:
             await xmpp_side.plugin['xep_0045'].join_muc(
                 room=tmp_muc_id,
                 nick=new_matrix_nick,
                 pfrom=jid,
             )
+
+            asyncio_event.set()
+
         except Exception as e:
+
+            asyncio_event.set()
 
             await matrix_side.room_send(
                 room_id=room.room_id,
@@ -507,14 +552,26 @@ async def media_callback(room: MatrixRoom, event: RoomMessageMedia) -> None:
     message.send()
 
 
+async def media_callback(room, event) -> None:
+    """actually coroutine this shit pt 2"""
+    task: asyncio.Task = asyncio.create_task(media_handler(room, event))
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+
 async def nio_main() -> None:
     global matrix_side  # <--- THIS IS MISSING
 
     matrix_side = AsyncClient(
         login['matrix']['domain'], login['matrix']['mxid'])
     matrix_side.add_event_callback(
-        message_callback, (RoomMessageText, RoomMessageNotice))
-    matrix_side.add_event_callback(media_callback, RoomMessageMedia)
+        message_callback,  # callback that throws it into a thread
+        (RoomMessageText, RoomMessageNotice)  # types to handle
+    )
+    matrix_side.add_event_callback(
+        media_callback,  # callback that throws it into a thread
+        RoomMessageMedia  # type to handle
+    )
 
     await matrix_side.login(login['matrix']['password'])
 
