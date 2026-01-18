@@ -139,7 +139,7 @@ async def federation_media_download(media_id: str):
     part_2 = (
         f"--{boundary}{CRLF}"
         f"Location: {redirect_url}{CRLF}"
-        f"{CRLF}"
+        f"{CRLF}{CRLF}"
     )
 
     # Closing boundary
