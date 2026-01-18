@@ -29,6 +29,7 @@ from fastapi.responses import StreamingResponse
 
 # database
 import psycopg_pool
+from psycopg.errors import UniqueViolation
 
 # collect background tasks
 background_tasks = set()
@@ -256,52 +257,68 @@ is_joining: dict[str, asyncio.Event] = {}
 tmp_muc_id = "chaos@group.pain.agency"  # TODO
 
 
+async def insert_msg_from_mtrx(event_id: str, body: str, jid: JID, mxid: str) -> None:
+    async with db_pool.connection() as conn:
+        await conn.execute(
+            "insert into media_mappings (matrix_message_id, body, user_jid, user_mxid) values (%s, %s, %s, %s)",
+            (event_id, body, str(jid), mxid),
+        )
+
+
 async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
 
     # temporary until appservice is used
     if event.sender == login['matrix']['mxid']:
         return
 
-    try:
-        async with db_pool.connection() as conn:
-            await conn.execute(
-                "insert into media_mappings (matrix_message_id) values (%s)",
-                (event.event_id,),
-            )
-        bridged_mx_eventid.add(event.event_id)
-    except Exception as e:
-        print(e)
-        return
+    jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
     # hold onto events until they can be bridged
     await xmpp_side_started.wait()
 
-    jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
+    new_bridged_muc_jid = escape_nickname(
+        "chaos@group.pain.agency",
+        room.user_name(event.sender)
+    )
+    new_bridged_nick = new_bridged_muc_jid.resource
 
-    new_matrix_nick = escape_nickname(
-        "chaos@group.pain.agency", room.user_name(event.sender)).resource
+    create_row_task: asyncio.Task = asyncio.Task(
+        insert_msg_from_mtrx(
+            event.event_id,
+            event.body,
+            new_bridged_muc_jid,
+            event.sender
+        )
+    )
+
+    bridged_mx_eventid.add(event.event_id)
 
     # dont proceede if a join is in progress
     if is_joining.get(jid) is not None:
-        is_joining[jid].wait()
+        await is_joining[jid].wait()
 
-    if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids or event.body.startswith("!join"):
+    # puppet joining logic
+    if new_bridged_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids or event.body.startswith("!join"):
 
         # avoid duplicate joins
         asyncio_event = is_joining.get(jid)
         if asyncio_event is None:
             is_joining[jid] = asyncio_event = asyncio.Event()
-        asyncio_event.clear()
+        else:
+            asyncio_event.clear()
 
         try:
+            print("joining", new_bridged_nick)
             await xmpp_side.plugin['xep_0045'].join_muc(
                 room=tmp_muc_id,
-                nick=new_matrix_nick,
+                nick=new_bridged_nick,
                 pfrom=jid,
             )
+            print("joined", new_bridged_nick)
 
+            cached_matrix_nick[event.sender] = new_bridged_nick
             asyncio_event.set()
 
         except Exception as e:
@@ -330,7 +347,7 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
             return
 
         bridged_jids.add(jid)
-        bridged_jnics.add(new_matrix_nick)
+        bridged_jnics.add(new_bridged_nick)
 
     mx_reply_to_id = event.source \
         .get('content', {}) \
@@ -340,12 +357,13 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
 
     result = None
     stanza_id = None
+    reply_jid = None
     content = None
     if mx_reply_to_id:
         try:
             async with db_pool.connection() as conn:
                 cursor = await conn.execute(
-                    "SELECT (xmpp_message_id, body) FROM media_mappings WHERE matrix_message_id = %s",
+                    "SELECT (xmpp_message_id, user_jid, body) FROM media_mappings WHERE matrix_message_id = %s",
                     (mx_reply_to_id,)
                 )
 
@@ -355,15 +373,15 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
             print(e)
 
     if result:
-        if len(result) > 1:
-            stanza_id, content, *_ = result
+        if len(result) > 2:
+            stanza_id, reply_jid, content, *_ = result
         else:
             stanza_id = result[0]
 
     if stanza_id:
 
         message: stanza.Message = xmpp_side['xep_0461'].make_reply(
-            "chaos@group.pain.agency/asdf",
+            reply_jid or "chaos@group.pain.agency/",
             stanza_id or "",
             fallback=content or "",
             mto=tmp_muc_id,
@@ -383,6 +401,33 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
         )
 
     message.set_id(event.event_id)
+
+    # dont send across until we have recorded it in the database
+    try:
+        await create_row_task
+    except UniqueViolation as _:
+        # this is working as intended as to not duplicate messages
+        return
+    except Exception as e:
+        await matrix_side.room_send(
+            room_id=room.room_id,
+            message_type="m.room.message",
+            content={
+                "msgtype": "m.text",
+                "m.mentions": {
+                    "user_ids": [
+                        event.sender
+                    ]
+                },
+                "m.relates_to": {
+                    "m.in_reply_to": {
+                        "event_id": event.event_id
+                    }
+                },
+                "body": f"Could not bridge your message because of database error of type {type(e)}. error:\n{e}",
+            }
+        )
+        return
 
     try:
         message.send()
@@ -415,6 +460,25 @@ async def message_callback(room: MatrixRoom, event) -> None:
     task.add_done_callback(background_tasks.discard)
 
 
+async def insert_media_msg_from_mtrx(event_id: str, mxc: str, xmpp_media_id: str, body: str, filename: str, jid: JID, mxid: str) -> None:
+    async with db_pool.connection() as conn:
+        await conn.execute(
+            """
+            insert into media_mappings (
+                matrix_message_id, 
+                original_matrix_media_id, 
+                bridged_xmpp_media_id, 
+                body, 
+                filename, 
+                user_jid, 
+                user_mxid
+            ) values (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (event_id, mxc, xmpp_media_id,
+             body, filename, str(jid), mxid),
+        )
+
+
 async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     # temporary until appservice is used
@@ -428,28 +492,52 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
-    new_matrix_nick = escape_nickname(
-        "chaos@group.pain.agency", room.user_name(event.sender)).resource
+    media_id: str = str(uuid.uuid4())
+    raw_mx_filename = event.source.get('content', {}).get('filename')
+    filename: str = urllib.parse.quote_plus(
+        (raw_mx_filename or event.body).split('/')[-1]
+    )
+
+    new_bridged_muc_jid = escape_nickname(
+        "chaos@group.pain.agency",
+        room.user_name(event.sender)
+    )
+    new_bridged_nick = new_bridged_muc_jid.resource
+
+    create_row_task: asyncio.Task = asyncio.Task(
+        insert_media_msg_from_mtrx(
+            event.event_id,
+            event.url,
+            media_id,
+            event.body,
+            filename,
+            new_bridged_muc_jid,
+            event.sender
+        )
+    )
 
     # dont proceede if a join is in progress
     if is_joining.get(jid) is not None:
-        is_joining[jid].wait()
+        await is_joining[jid].wait()
 
-    if new_matrix_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids:
+    # join puppet logic
+    if new_bridged_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids:
 
         # avoid duplicate joins
         asyncio_event = is_joining.get(jid)
         if asyncio_event is None:
             is_joining[jid] = asyncio_event = asyncio.Event()
-        asyncio_event.clear()
+        else:
+            asyncio_event.clear()
 
         try:
             await xmpp_side.plugin['xep_0045'].join_muc(
                 room=tmp_muc_id,
-                nick=new_matrix_nick,
+                nick=new_bridged_nick,
                 pfrom=jid,
             )
 
+            cached_matrix_nick[event.sender] = new_bridged_nick
             asyncio_event.set()
 
         except Exception as e:
@@ -478,19 +566,35 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
             return
 
         bridged_jids.add(jid)
-        bridged_jnics.add(new_matrix_nick)
-    media_id: str = str(uuid.uuid4())
-    filename: str = urllib.parse.quote_plus(event.body.split('/')[-1])
+        bridged_jnics.add(new_bridged_nick)
+
     try:
-        async with db_pool.connection() as conn:
-            await conn.execute(
-                "insert into media_mappings (matrix_message_id, original_matrix_media_id, bridged_xmpp_media_id) values (%s, %s, %s)",
-                (event.event_id, event.url, media_id),
-            )
-        bridged_mx_eventid.add(event.event_id)
-    except Exception as e:
-        print(e)
+        await create_row_task
+    except UniqueViolation as _:
+        # this is working as intended as to not duplicate messages
         return
+    except Exception as e:
+        await matrix_side.room_send(
+            room_id=room.room_id,
+            message_type="m.room.message",
+            content={
+                "msgtype": "m.text",
+                "m.mentions": {
+                    "user_ids": [
+                        event.sender
+                    ]
+                },
+                "m.relates_to": {
+                    "m.in_reply_to": {
+                        "event_id": event.event_id
+                    }
+                },
+                "body": f"Could not bridge your message because of database error of type {type(e)}. error:\n{e}",
+            }
+        )
+        return
+
+    bridged_mx_eventid.add(event.event_id)
 
     url: str = f"https://{login['http_domain']}/matrix-proxy/{media_id}/{filename}"
 
@@ -502,12 +606,13 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     result = None
     stanza_id = None
+    reply_jid = None
     content = None
     if mx_reply_to_id:
         try:
             async with db_pool.connection() as conn:
                 cursor = await conn.execute(
-                    "SELECT (xmpp_message_id, body) FROM media_mappings WHERE matrix_message_id = %s",
+                    "SELECT (xmpp_message_id, user_jid, body) FROM media_mappings WHERE matrix_message_id = %s",
                     (mx_reply_to_id,)
                 )
 
@@ -517,19 +622,19 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
             print(e)
 
     if result:
-        if len(result) > 1:
-            stanza_id, content, *_ = result
+        if len(result) > 2:
+            stanza_id, reply_jid, content, *_ = result
         else:
             stanza_id = result[0]
 
     if stanza_id:
 
         message: stanza.Message = xmpp_side['xep_0461'].make_reply(
-            "chaos@group.pain.agency/asdf",
+            reply_jid or "chaos@group.pain.agency/",
             stanza_id or "",
             fallback=content or "",
             mto=tmp_muc_id,
-            mbody=url,
+            mbody=url if raw_mx_filename is None else f"{event.body}\n{url}",
             mtype='groupchat',
             mfrom=jid,
         )
@@ -538,7 +643,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
         message: stanza.Message = xmpp_side.make_message(
             mto=tmp_muc_id,
-            mbody=url,
+            mbody=url if raw_mx_filename is None else f"{event.body}\n{url}",
             mtype='groupchat',
             mfrom=jid,
 
@@ -679,7 +784,7 @@ class EchoComponent(ComponentXMPP):
                 # ignore all puppets
                 if msg_from.resource in bridged_jnics or msg_from.bare in bridged_jids:
                     try:
-                        matrix_side.room_read_markers(
+                        await matrix_side.room_read_markers(
                             "!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
                         return
                     except Exception as _:
@@ -687,22 +792,26 @@ class EchoComponent(ComponentXMPP):
 
                 xmpp_replyto_id = msg.get('reply', {}).get('id')
                 matrix_replyto_id = None
+                replyto_mxid = None
                 result = None
                 if xmpp_replyto_id:
                     try:
                         async with db_pool.connection() as conn:
                             cursor = await conn.execute(
-                                "SELECT (matrix_message_id) FROM media_mappings WHERE xmpp_message_id = %s",
+                                "SELECT (matrix_message_id, user_mxid) FROM media_mappings WHERE xmpp_message_id = %s",
                                 (xmpp_replyto_id,)
                             )
 
-                            result = await cursor.fetchone()
+                            result = (await cursor.fetchone())[0]
 
                     except Exception as e:
                         print(e)
 
                 if result:
-                    matrix_replyto_id = result[0]
+                    if len(result) > 1:
+                        matrix_replyto_id, replyto_mxid, *_ = result
+                    else:
+                        matrix_replyto_id = result[0]
 
                 fallback_range = msg['fallback']['body']
                 b = msg.get('body', 'No body found !?')
@@ -736,7 +845,17 @@ class EchoComponent(ComponentXMPP):
                             content={
                                 "msgtype": "m.text",
                                 "body": f"{msg['from'].resource}:\n{body}",
-                                **(
+                                # TODO: properly parse out mentions based on bridged displayname
+                                ** (
+                                    {
+                                        "m.mentions": {
+                                            "user_ids": [
+                                                replyto_mxid
+                                            ],
+                                        },
+                                    } if replyto_mxid else {}
+                                ),
+                                ** (
                                     {
                                         "m.relates_to": {
                                             "m.in_reply_to": {
@@ -754,11 +873,20 @@ class EchoComponent(ComponentXMPP):
                     try:
                         async with db_pool.connection() as conn:
                             await conn.execute(
-                                "insert into media_mappings (xmpp_message_id, matrix_message_id) values (%s, %s)",
-                                (stanzaid, resp.event_id),
+                                "insert into media_mappings (xmpp_message_id, matrix_message_id, body, user_jid) values (%s, %s, %s, %s)",
+                                (stanzaid, resp.event_id,
+                                 body, str(msg['from'])),
                             )
                     except Exception as e:
-                        print(e)
+                        self['xep_0461'].make_reply(
+                            msg['from'],
+                            stanzaid,
+                            body,
+                            mto="chaos@group.pain.agency",
+                            mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
+                            mtype='groupchat',
+                            mfrom="koishi.pain.agency",
+                        )
                         return
 
                 else:
@@ -777,7 +905,17 @@ class EchoComponent(ComponentXMPP):
                             content={
                                 "msgtype": "m.text",
                                 "body": f"{msg['from'].resource} sent a(n) {mime_type}",
-                                **(
+                                # TODO: properly parse out mentions based on bridged displayname
+                                ** (
+                                    {
+                                        "m.mentions": {
+                                            "user_ids": [
+                                                replyto_mxid,
+                                            ],
+                                        },
+                                    } if replyto_mxid else {}
+                                ),
+                                ** (
                                     {
                                         "m.relates_to": {
                                             "m.in_reply_to": {
@@ -797,11 +935,20 @@ class EchoComponent(ComponentXMPP):
                     try:
                         async with db_pool.connection() as conn:
                             await conn.execute(
-                                "insert into media_mappings (xmpp_message_id, original_xmpp_media_url, bridged_matrix_media_id) values (%s, %s, %s)",
-                                (stanzaid, url, file_id),
+                                "insert into media_mappings (xmpp_message_id, original_xmpp_media_url, bridged_matrix_media_id, body, user_jid) values (%s, %s, %s, %s, %s)",
+                                (stanzaid, url, file_id,
+                                 body, str(msg['from'])),
                             )
                     except Exception as e:
-                        print(e)
+                        self['xep_0461'].make_reply(
+                            msg['from'],
+                            stanzaid,
+                            body,
+                            mto="chaos@group.pain.agency",
+                            mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
+                            mtype='groupchat',
+                            mfrom="koishi.pain.agency",
+                        )
                         return
 
                     try:
@@ -817,7 +964,15 @@ class EchoComponent(ComponentXMPP):
                             },
                         )
                     except Exception as e:
-                        print(e)
+                        self['xep_0461'].make_reply(
+                            msg['from'],
+                            stanzaid,
+                            body,
+                            mto="chaos@group.pain.agency",
+                            mbody=f"could not bridge message because of matrix error of type {type(e)}\n{e}",
+                            mtype='groupchat',
+                            mfrom="koishi.pain.agency",
+                        )
                         return
 
                     try:
@@ -827,7 +982,15 @@ class EchoComponent(ComponentXMPP):
                                 (resp.event_id, stanzaid)
                             )
                     except Exception as e:
-                        print(e)
+                        self['xep_0461'].make_reply(
+                            msg['from'],
+                            stanzaid,
+                            body,
+                            mto="chaos@group.pain.agency",
+                            mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
+                            mtype='groupchat',
+                            mfrom="koishi.pain.agency",
+                        )
                         return
 
                 print(resp)
