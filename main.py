@@ -12,6 +12,8 @@ import string
 # xml parsing
 import xml.etree.ElementTree as ET
 
+import aiofiles
+
 # xmpp library
 from slixmpp import stanza, JID, InvalidJID
 from slixmpp.componentxmpp import ComponentXMPP
@@ -25,7 +27,7 @@ import httpx
 # webserver
 import uvicorn
 from fastapi import FastAPI, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 # database
 import psycopg_pool
@@ -53,7 +55,7 @@ db_pool = psycopg_pool.AsyncConnectionPool(
 )
 
 # Initialize a client for the proxy to use
-proxy_client = httpx.AsyncClient()
+http_fetch_client = httpx.AsyncClient()
 app = FastAPI()
 
 
@@ -175,66 +177,206 @@ EXCLUDED_HEADERS = {
 }
 
 
+async def get_matrix_mediapath(xmpp_media_id: str) -> tuple[str | None, str | None, int | None]:
+    """
+    Gets the original MXC URI and the local cache path for a given ID.
+    Args:
+        xmpp_media_id: UUID assigned to the bridged media.
+    Returns:
+        A tuple of (mxc_uri, local_path, file_size). All can be None if not found.
+    """
+    async with db_pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "select original_matrix_media_id, path, size from media_mappings where bridged_xmpp_media_id = %s",
+                (xmpp_media_id,),
+            )
+            # there should only be one result available
+            fetch = await cursor.fetchone()
+
+    # if fetch:
+    #     record = (fetch)[0]
+    # else:
+    #     record = ()
+
+    if len(fetch) != 3:
+        raise ValueError(
+            f"expected response from database containing 3 values, got length {len(fetch)}: {str(fetch)}")
+    return fetch
+
+
+async def download_matrix_media(matrix_host: str, token: str, mxc: str, cache_dir: str) -> tuple[str, int]:
+    """
+    Downloads matrix media to the local cache folder
+    Args:
+        matrix_host: base url for our matrix server to download media from
+        Token: authentication token for downloading matrix media
+        mxc: the mxc uri for media
+        dir: directory to download media to
+    Returns:
+        tuple containing the filepath to the downloaded file and its size
+    """
+
+    originating_server, matrix_media_id = mxc.split("/")[-2:]
+    upstream_url = f"{matrix_host}/_matrix/client/v1/media/download/{originating_server}/{matrix_media_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    filename = str(uuid.uuid4())
+    filepath = f"{ cache_dir }{ '' if cache_dir.endswith('/') else '/' }{ filename }"
+
+    downloaded_bytes = 0
+
+    async with http_fetch_client.stream("GET", upstream_url, headers=headers) as response:
+        response.raise_for_status()
+        size_bytes = int(response.headers["content-length"])
+        async with aiofiles.open(filepath, "wb") as f:
+            async for chunk in response.aiter_bytes(chunk_size=8192):
+                downloaded_bytes += len(chunk)
+                await f.write(chunk)
+
+    async with db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE media_mappings SET path = %s, size = %s WHERE original_matrix_media_id = %s",
+            (filepath, downloaded_bytes, mxc),
+        )
+
+    return (filepath, downloaded_bytes)
+
+
+@app.head("/matrix-proxy/{media_id}/{file_name}")
+async def matrix_proxy_head(media_id: str, file_name: str):
+    mxc, _, size = await get_matrix_mediapath(media_id)
+
+    # if we dont know what original file this points to we have no way of
+    if mxc is None:
+        return Response(status_code=404, content="No record of this file was found in our database")
+
+    mime_type, _ = mimetypes.guess_type(file_name)
+
+    # attempt to fetch missing data
+    if not size:
+        originating_server, matrix_media_id = mxc.split("/")[-2:]
+        upstream_url = f"{login['matrix']['domain']}/_matrix/client/v1/media/download/{originating_server}/{matrix_media_id}"
+        headers = {"Authorization": f"Bearer {matrix_side.access_token}"}
+        try:
+            upstream_response = await http_fetch_client.head(
+                upstream_url,
+                headers=headers,
+                follow_redirects=True
+            )
+
+            size = upstream_response.headers.get('Content-Length')
+
+            async with db_pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE media_mappings SET size = %s WHERE original_matrix_media_id = %s",
+                    (size, mxc),
+                )
+        except httpx.HTTPError as e:
+            return Response(
+                content=None,
+                status_code=502,
+                headers={'X-Error': str(e)}
+            )
+
+    return Response(
+        content=None,
+        status_code=200,
+        headers={
+            'Content-Type': mime_type or "application/octet-stream",
+            **({'Content-Length': str(size)} if size is not None else {}),
+            'Cache-Control': 'public, max-age=31536000',
+        }
+    )
+
+
+await_file_download: dict[str, asyncio.Task] = {}
+
+
 @app.get("/matrix-proxy/{media_id}/{file_name}")
 async def matrix_proxy(media_id: str, file_name: str):
     # Check if the bridge is logged in
     if not matrix_side or not matrix_side.access_token:
         return Response(status_code=503, content="Bridge not logged in yet")
 
-    # Get the homeserver base URL
-    homeserver_url = login['matrix']['domain']
-    if not homeserver_url.startswith("http"):
-        homeserver_url = f"https://{homeserver_url}"
+    # TODO: update last fetched date
+    mxc, filepath, size = await get_matrix_mediapath(media_id)
 
-    # Lookup the real Matrix media ID
-    async with db_pool.connection() as conn:
-        async with conn.cursor() as cursor:
-            # curr.
-            await cursor.execute(
-                "select original_matrix_media_id from media_mappings where bridged_xmpp_media_id = %s",
-                (media_id,),
-            )
-            record = await cursor.fetchone()
-            mxc = record[0]
+    # if we dont know what original file this points to we have no way of
     if mxc is None:
-        return Response(status_code=404, content="Media not found")
+        return Response(status_code=404, content="No record of this file was found in our database")
 
-    _, _, server_name, mxc_id = mxc.split('/')
-    upstream_url = f"{homeserver_url}/_matrix/client/v1/media/download/{server_name}/{mxc_id}"
+    # if theres a filepath already recorded in the db, we can just serve that and move on
+    if not filepath:
 
-    # Build the request
-    req = proxy_client.build_request(
-        "GET",
-        upstream_url,
-        headers={"Authorization": f"Bearer {matrix_side.access_token}"},
-        timeout=timeout_config
+        # Request Coalescing or In-Flight Deduping
+        download_task: asyncio.Task | None = await_file_download.get(media_id)
+        if download_task is None:
+
+            download_task = asyncio.create_task(
+                download_matrix_media(
+                    login['matrix']['domain'],
+                    matrix_side.access_token,
+                    mxc,
+                    "./cache"  # TODO user defined cache path, in case they want to put it on second tier storage
+                )
+            )
+
+            await_file_download[media_id] = download_task
+
+            download_task.add_done_callback(
+                lambda _: await_file_download.pop(media_id, None)
+            )
+
+        try:
+            filepath, _ = await download_task
+        except httpx.HTTPStatusError as e:
+            return JSONResponse(
+                status_code=e.response.status_code,
+                content={
+                    "error": e.response.reason_phrase,
+                    "upstream_status": e.response.status_code
+                }
+            )
+        except httpx.RequestError as e:
+            # Network errors become 502 Bad Gateway
+            return JSONResponse(
+                status_code=523,
+                content={
+                    "error": str(e)
+                }
+            )
+        except ValueError as e:
+            # File size errors become 413 Payload Too Large
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": str(e)
+                }
+            )
+        except Exception as e:
+            print(e.with_traceback(None))
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": str(e.with_traceback(None))
+                }
+            )
+
+    mime_type, _ = mimetypes.guess_type(file_name)
+
+    return FileResponse(
+        path=filepath,
+        filename=file_name,
+        media_type=mime_type or "application/octet-stream",
+        headers={
+            # TODO: acl for browsers
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            "Content-Disposition": "inline"
+            # 'ETag': cached_meta.get('etag', ''),
+        }
     )
 
-    # Send request with stream=True
-    resp = await proxy_client.send(req, stream=True)
-
-    if resp.status_code in {301, 302, 307, 308}:
-        # no good way to test without hosting a server so hopefully this works
-        return Response(status_code=resp.status_code, content=resp.content)
-    elif resp.status_code != 200:
-        await resp.aclose()
-        return Response(status_code=resp.status_code, content="Upstream Error")
-
-    # Filter headers, but KEEP Content-Length
-    forwarded_headers = {
-        k: v for k, v in resp.headers.items()
-        if k.lower() not in EXCLUDED_HEADERS
-    }
-
-    # aiter_raw() yields the exact bytes from the socket (compressed or not).
-    # This guarantees the data matches the upstream Content-Length header.
-    return StreamingResponse(
-        resp.aiter_raw(),
-        status_code=resp.status_code,
-        headers=forwarded_headers,
-        media_type=resp.headers.get("content-type"),
-        background=resp.aclose
-    )
 
 # Global variables to store instances
 xmpp_side = None
@@ -284,7 +426,7 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     )
     new_bridged_nick = new_bridged_muc_jid.resource
 
-    create_row_task: asyncio.Task = asyncio.Task(
+    create_row_task: asyncio.Task = asyncio.create_task(
         insert_msg_from_mtrx(
             event.event_id,
             event.body,
@@ -363,11 +505,11 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
         try:
             async with db_pool.connection() as conn:
                 cursor = await conn.execute(
-                    "SELECT (xmpp_message_id, user_jid, body) FROM media_mappings WHERE matrix_message_id = %s",
+                    "SELECT xmpp_message_id, user_jid, body FROM media_mappings WHERE matrix_message_id = %s",
                     (mx_reply_to_id,)
                 )
 
-                result = (await cursor.fetchone())[0]
+                result = (await cursor.fetchone())
 
         except Exception as e:
             print(e)
@@ -504,7 +646,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
     )
     new_bridged_nick = new_bridged_muc_jid.resource
 
-    create_row_task: asyncio.Task = asyncio.Task(
+    create_row_task: asyncio.Task = asyncio.create_task(
         insert_media_msg_from_mtrx(
             event.event_id,
             event.url,
@@ -612,11 +754,11 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
         try:
             async with db_pool.connection() as conn:
                 cursor = await conn.execute(
-                    "SELECT (xmpp_message_id, user_jid, body) FROM media_mappings WHERE matrix_message_id = %s",
+                    "SELECT xmpp_message_id, user_jid, body FROM media_mappings WHERE matrix_message_id = %s",
                     (mx_reply_to_id,)
                 )
 
-                result = (await cursor.fetchone())[0]
+                result = await cursor.fetchone()
 
         except Exception as e:
             print(e)
@@ -798,11 +940,11 @@ class EchoComponent(ComponentXMPP):
                     try:
                         async with db_pool.connection() as conn:
                             cursor = await conn.execute(
-                                "SELECT (matrix_message_id, user_mxid) FROM media_mappings WHERE xmpp_message_id = %s",
+                                "SELECT matrix_message_id, user_mxid FROM media_mappings WHERE xmpp_message_id = %s",
                                 (xmpp_replyto_id,)
                             )
 
-                            result = (await cursor.fetchone())[0]
+                            result = (await cursor.fetchone())
 
                     except Exception as e:
                         print(e)
