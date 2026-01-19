@@ -249,6 +249,8 @@ async def matrix_proxy_head(media_id: str, file_name: str):
 
     # if we dont know what original file this points to we have no way of
     if mxc is None:
+        print(
+            f"Failed to get head request for id {media_id} as no record was found in database")
         return Response(status_code=404, content="No record of this file was found in our database")
 
     mime_type, _ = mimetypes.guess_type(file_name)
@@ -273,6 +275,8 @@ async def matrix_proxy_head(media_id: str, file_name: str):
                     (size, mxc),
                 )
         except httpx.HTTPError as e:
+            print(
+                f"Failed to get head request for id {media_id} ({mxc}) due to upstream error\n{e}")
             return Response(
                 content=None,
                 status_code=502,
@@ -304,6 +308,8 @@ async def matrix_proxy(media_id: str, file_name: str):
 
     # if we dont know what original file this points to we have no way of
     if mxc is None:
+        print(
+            f"Failed to fullfill get request for id {media_id} ({mxc}) because no record was found")
         return Response(status_code=404, content="No record of this file was found in our database")
 
     # if theres a filepath already recorded in the db, we can just serve that and move on
@@ -331,6 +337,8 @@ async def matrix_proxy(media_id: str, file_name: str):
         try:
             filepath, _ = await download_task
         except httpx.HTTPStatusError as e:
+            print(
+                f"Failed to fullfill get request for id {media_id} ({mxc}) due to upstream error\n{e}")
             return JSONResponse(
                 status_code=e.response.status_code,
                 content={
@@ -338,16 +346,22 @@ async def matrix_proxy(media_id: str, file_name: str):
                     "upstream_status": e.response.status_code
                 }
             )
+
         except httpx.RequestError as e:
             # Network errors become 502 Bad Gateway
+            print(
+                f"Failed to fullfill get request for id {media_id} ({mxc}) due to upstream error\n{e}")
             return JSONResponse(
                 status_code=523,
                 content={
                     "error": str(e)
                 }
             )
+
         except ValueError as e:
             # File size errors become 413 Payload Too Large
+            print(
+                f"Failed to fullfill get request for id {media_id} ({mxc}) due to too large of a response\n{e}")
             return JSONResponse(
                 status_code=413,
                 content={
