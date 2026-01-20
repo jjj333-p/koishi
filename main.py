@@ -188,7 +188,12 @@ async def get_matrix_mediapath(xmpp_media_id: str) -> tuple[str | None, str | No
     async with db_pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "select original_matrix_media_id, path, size from media_mappings where bridged_xmpp_media_id = %s",
+                """
+                UPDATE media_mappings 
+                SET last_fetched_at = CURRENT_TIMESTAMP 
+                WHERE bridged_xmpp_media_id = %s
+                RETURNING original_matrix_media_id, path, size
+                """,
                 (xmpp_media_id,),
             )
             # there should only be one result available
