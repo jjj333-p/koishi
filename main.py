@@ -812,19 +812,21 @@ class EchoComponent(ComponentXMPP):
                         print(e)
                     finally:
                         bridged_mx_eventid.remove(msg.get('id', ''))
-                        # if its in the map can short circut regardless of the return
-                        # pylint: disable=return-in-finally
-                        # pylint: disable=lost-exception
-                        return
+                        try:
+                            await matrix_side.room_read_markers(
+                                "!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
+                        except Exception as _:
+                            pass
+                        finally:
+                            # if its in the map can short circut regardless of the return
+                            # pylint: disable=return-in-finally
+                            # pylint: disable=lost-exception
+                            return
 
                 # ignore all puppets
+                # TODO clean this up
                 if msg_from.resource in bridged_jnics or msg_from.bare in bridged_jids:
-                    try:
-                        await matrix_side.room_read_markers(
-                            "!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
-                        return
-                    except Exception as _:
-                        return
+                    return
 
                 xmpp_replyto_id = msg.get('reply', {}).get('id')
                 matrix_replyto_id = None
