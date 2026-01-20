@@ -2,3 +2,4 @@
 log.txt
 login.*
 cache
+__pycache__

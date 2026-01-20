@@ -7,7 +7,6 @@ import mimetypes
 import uuid
 import secrets
 import urllib
-import string
 
 # xml parsing
 import xml.etree.ElementTree as ET
@@ -15,7 +14,7 @@ import xml.etree.ElementTree as ET
 import aiofiles
 
 # xmpp library
-from slixmpp import stanza, JID, InvalidJID
+from slixmpp import stanza
 from slixmpp.componentxmpp import ComponentXMPP
 
 # temporary matrix library
@@ -30,8 +29,10 @@ from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 # database
-import psycopg_pool
 from psycopg.errors import UniqueViolation
+
+import util
+from db import KoishiDB
 
 # collect background tasks
 background_tasks = set()
@@ -46,35 +47,15 @@ timeout_config = httpx.Timeout(300.0, connect=5.0)
 with open('login.json', 'r', encoding='utf-8') as login_file:
     login = json.load(login_file)
 
-# create db pool, do not connect now because it has to be inside the async loop (what is python)
-db_pool = psycopg_pool.AsyncConnectionPool(
-    conninfo=login['postgresql_conn'],
-    min_size=1,
-    max_size=3,
-    open=False,
+db: KoishiDB = KoishiDB(
+    conn_str=login['postgresql_conn'],
+    min_connections=1,
+    max_connections=3,
 )
 
 # Initialize a client for the proxy to use
 http_fetch_client = httpx.AsyncClient()
 app = FastAPI()
-
-
-def escape_nickname(muc_jid: JID, nickname: str) -> JID:
-    jid = JID(muc_jid)
-
-    try:
-        jid.resource = nickname
-    except InvalidJID:
-        nickname = nickname.encode("punycode").decode()
-        try:
-            jid.resource = nickname
-        except InvalidJID:
-            # at this point there still might be control chars
-            jid.resource = "".join(
-                x for x in nickname if x in string.printable
-            ) + f"-koishi-{hash(nickname)}"
-
-    return jid
 
 
 @app.get("/.well-known/matrix/server")
@@ -97,16 +78,8 @@ async def federation_media_download(media_id: str):
     Implements the Authenticated Media 'Location' redirect flow
     """
 
-    # Lookup the arbitrary URL in the dictionary
-    async with db_pool.connection() as conn:
-        async with conn.cursor() as cursor:
-            # curr.
-            await cursor.execute(
-                "select original_xmpp_media_url from media_mappings where bridged_matrix_media_id = %s",
-                (media_id,),
-            )
-            record = await cursor.fetchone()
-            redirect_url = record[0]
+    record = await db.get_original_xmpp_url(media_id)
+    redirect_url = record[0] if record else None  # safe fallback
 
     # Handle 404 if media ID doesn't exist
     if not redirect_url:
@@ -159,57 +132,6 @@ async def federation_media_download(media_id: str):
     )
 
 
-# Only exclude headers that are strictly hop-by-hop connection details.
-# We KEEL Content-Length and Content-Encoding now.
-EXCLUDED_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",  # We let FastAPI manage chunking if needed
-    "upgrade",
-    "host",
-    "server",
-    "report-to",
-    "set-cookie"
-}
-
-
-async def get_matrix_mediapath(xmpp_media_id: str) -> tuple[str | None, str | None, int | None]:
-    """
-    Gets the original MXC URI and the local cache path for a given ID.
-    Args:
-        xmpp_media_id: UUID assigned to the bridged media.
-    Returns:
-        A tuple of (mxc_uri, local_path, file_size). All can be None if not found.
-    """
-    async with db_pool.connection() as conn:
-        async with conn.cursor() as cursor:
-            await cursor.execute(
-                """
-                UPDATE media_mappings 
-                SET last_fetched_at = CURRENT_TIMESTAMP 
-                WHERE bridged_xmpp_media_id = %s
-                RETURNING original_matrix_media_id, path, size
-                """,
-                (xmpp_media_id,),
-            )
-            # there should only be one result available
-            fetch = await cursor.fetchone()
-
-    # if fetch:
-    #     record = (fetch)[0]
-    # else:
-    #     record = ()
-
-    if len(fetch) != 3:
-        raise ValueError(
-            f"expected response from database containing 3 values, got length {len(fetch)}: {str(fetch)}")
-    return fetch
-
-
 async def download_matrix_media(matrix_host: str, token: str, mxc: str, cache_dir: str) -> tuple[str, int]:
     """
     Downloads matrix media to the local cache folder
@@ -239,18 +161,14 @@ async def download_matrix_media(matrix_host: str, token: str, mxc: str, cache_di
                 downloaded_bytes += len(chunk)
                 await f.write(chunk)
 
-    async with db_pool.connection() as conn:
-        await conn.execute(
-            "UPDATE media_mappings SET path = %s, size = %s WHERE original_matrix_media_id = %s",
-            (filepath, downloaded_bytes, mxc),
-        )
+    await db.set_mtrx_media_cache_path(filepath, downloaded_bytes, mxc)
 
     return (filepath, downloaded_bytes)
 
 
 @app.head("/matrix-proxy/{media_id}/{file_name}")
 async def matrix_proxy_head(media_id: str, file_name: str):
-    mxc, _, size = await get_matrix_mediapath(media_id)
+    mxc, filepath, size = await db.get_matrix_mediapath(media_id)
 
     # if we dont know what original file this points to we have no way of
     if mxc is None:
@@ -274,11 +192,9 @@ async def matrix_proxy_head(media_id: str, file_name: str):
 
             size = upstream_response.headers.get('Content-Length')
 
-            async with db_pool.connection() as conn:
-                await conn.execute(
-                    "UPDATE media_mappings SET size = %s WHERE original_matrix_media_id = %s",
-                    (size, mxc),
-                )
+            if not filepath:
+                await db.set_mtrx_media_size(size, mxc)
+
         except httpx.HTTPError as e:
             print(
                 f"Failed to get head request for id {media_id} ({mxc}) due to upstream error\n{e}")
@@ -309,7 +225,7 @@ async def matrix_proxy(media_id: str, file_name: str):
         return Response(status_code=503, content="Bridge not logged in yet")
 
     # TODO: update last fetched date
-    mxc, filepath, size = await get_matrix_mediapath(media_id)
+    mxc, filepath, size = await db.get_matrix_mediapath(media_id)
 
     # if we dont know what original file this points to we have no way of
     if mxc is None:
@@ -418,14 +334,6 @@ is_joining: dict[str, asyncio.Event] = {}
 tmp_muc_id = "chaos@group.pain.agency"  # TODO
 
 
-async def insert_msg_from_mtrx(event_id: str, body: str, jid: JID, mxid: str) -> None:
-    async with db_pool.connection() as conn:
-        await conn.execute(
-            "insert into media_mappings (matrix_message_id, body, user_jid, user_mxid) values (%s, %s, %s, %s)",
-            (event_id, body, str(jid), mxid),
-        )
-
-
 async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
 
     # temporary until appservice is used
@@ -439,14 +347,14 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     # hold onto events until they can be bridged
     await xmpp_side_started.wait()
 
-    new_bridged_muc_jid = escape_nickname(
+    new_bridged_muc_jid = util.escape_nickname(
         "chaos@group.pain.agency",
         room.user_name(event.sender)
     )
     new_bridged_nick = new_bridged_muc_jid.resource
 
     create_row_task: asyncio.Task = asyncio.create_task(
-        insert_msg_from_mtrx(
+        db.insert_msg_from_mtrx(
             event.event_id,
             event.body,
             new_bridged_muc_jid,
@@ -522,14 +430,7 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     content = None
     if mx_reply_to_id:
         try:
-            async with db_pool.connection() as conn:
-                cursor = await conn.execute(
-                    "SELECT xmpp_message_id, user_jid, body FROM media_mappings WHERE matrix_message_id = %s",
-                    (mx_reply_to_id,)
-                )
-
-                result = (await cursor.fetchone())
-
+            result = await db.get_xmpp_reply_data(mx_reply_to_id)
         except Exception as e:
             print(e)
 
@@ -621,25 +522,6 @@ async def message_callback(room: MatrixRoom, event) -> None:
     task.add_done_callback(background_tasks.discard)
 
 
-async def insert_media_msg_from_mtrx(event_id: str, mxc: str, xmpp_media_id: str, body: str, filename: str, jid: JID, mxid: str) -> None:
-    async with db_pool.connection() as conn:
-        await conn.execute(
-            """
-            insert into media_mappings (
-                matrix_message_id, 
-                original_matrix_media_id, 
-                bridged_xmpp_media_id, 
-                body, 
-                filename, 
-                user_jid, 
-                user_mxid
-            ) values (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (event_id, mxc, xmpp_media_id,
-             body, filename, str(jid), mxid),
-        )
-
-
 async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     # temporary until appservice is used
@@ -659,14 +541,14 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
         (raw_mx_filename or event.body).split('/')[-1]
     )
 
-    new_bridged_muc_jid = escape_nickname(
+    new_bridged_muc_jid = util.escape_nickname(
         "chaos@group.pain.agency",
         room.user_name(event.sender)
     )
     new_bridged_nick = new_bridged_muc_jid.resource
 
     create_row_task: asyncio.Task = asyncio.create_task(
-        insert_media_msg_from_mtrx(
+        db.insert_media_msg_from_mtrx(
             event.event_id,
             event.url,
             media_id,
@@ -771,14 +653,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
     content = None
     if mx_reply_to_id:
         try:
-            async with db_pool.connection() as conn:
-                cursor = await conn.execute(
-                    "SELECT xmpp_message_id, user_jid, body FROM media_mappings WHERE matrix_message_id = %s",
-                    (mx_reply_to_id,)
-                )
-
-                result = await cursor.fetchone()
-
+            result = await db.get_xmpp_reply_data(mx_reply_to_id)
         except Exception as e:
             print(e)
 
@@ -932,14 +807,14 @@ class EchoComponent(ComponentXMPP):
 
                 if msg.get('id', '') in bridged_mx_eventid:
                     try:
-                        async with db_pool.connection() as conn:
-                            await conn.execute(
-                                "UPDATE media_mappings SET xmpp_message_id = %s WHERE matrix_message_id = %s",
-                                (stanzaid, msg.get('id'))
-                            )
-                        bridged_mx_eventid.remove(msg.get('id', ''))
+                        await db.set_xmpp_stanzaid(stanzaid, msg.get('id', ''))
                     except Exception as e:
                         print(e)
+                    finally:
+                        bridged_mx_eventid.remove(msg.get('id', ''))
+                        # if its in the map can short circut regardless of the return
+                        # pylint: disable=return-in-finally
+                        # pylint: disable=lost-exception
                         return
 
                 # ignore all puppets
@@ -957,14 +832,7 @@ class EchoComponent(ComponentXMPP):
                 result = None
                 if xmpp_replyto_id:
                     try:
-                        async with db_pool.connection() as conn:
-                            cursor = await conn.execute(
-                                "SELECT matrix_message_id, user_mxid FROM media_mappings WHERE xmpp_message_id = %s",
-                                (xmpp_replyto_id,)
-                            )
-
-                            result = (await cursor.fetchone())
-
+                        result = await db.get_matrix_reply_data(xmpp_replyto_id)
                     except Exception as e:
                         print(e)
 
@@ -1032,12 +900,12 @@ class EchoComponent(ComponentXMPP):
                         return
 
                     try:
-                        async with db_pool.connection() as conn:
-                            await conn.execute(
-                                "insert into media_mappings (xmpp_message_id, matrix_message_id, body, user_jid) values (%s, %s, %s, %s)",
-                                (stanzaid, resp.event_id,
-                                 body, str(msg['from'])),
-                            )
+                        await db.insert_message_mapping(
+                            stanzaid,
+                            resp.event_id,
+                            body,
+                            str(msg['from'])
+                        )
                     except Exception as e:
                         self['xep_0461'].make_reply(
                             msg['from'],
@@ -1094,12 +962,11 @@ class EchoComponent(ComponentXMPP):
                     file_id = str(uuid.uuid4())
 
                     try:
-                        async with db_pool.connection() as conn:
-                            await conn.execute(
-                                "insert into media_mappings (xmpp_message_id, original_xmpp_media_url, bridged_matrix_media_id, body, user_jid) values (%s, %s, %s, %s, %s)",
-                                (stanzaid, url, file_id,
-                                 body, str(msg['from'])),
-                            )
+                        await db.insert_xmpp_media_message_mapping(
+                            stanzaid, url, file_id,
+                            body, msg['from']
+                        ),
+
                     except Exception as e:
                         self['xep_0461'].make_reply(
                             msg['from'],
@@ -1137,11 +1004,7 @@ class EchoComponent(ComponentXMPP):
                         return
 
                     try:
-                        async with db_pool.connection() as conn:
-                            await conn.execute(
-                                "UPDATE media_mappings SET matrix_message_id = %s WHERE xmpp_message_id = %s",
-                                (resp.event_id, stanzaid)
-                            )
+                        await db.set_mtrx_eventid(resp.event_id, stanzaid)
                     except Exception as e:
                         self['xep_0461'].make_reply(
                             msg['from'],
@@ -1172,7 +1035,7 @@ async def main():
         login['xmpp']['port'],
     )
 
-    await db_pool.open()
+    await db.connect()
 
     # This attaches XMPP to the event loop in the background.
     xmpp_side.connect()
@@ -1219,7 +1082,7 @@ async def main():
             await xmpp_side.disconnect()
             print("XMPP Disconnected.")
 
-        await db_pool.close()
+        await db.close()
 
 if __name__ == '__main__':
     try:
