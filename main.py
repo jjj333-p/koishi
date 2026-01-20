@@ -3,22 +3,14 @@
 import json
 import logging
 import asyncio
-import mimetypes
 import uuid
 import urllib
 
-# xml parsing
-import xml.etree.ElementTree as ET
-
 # xmpp library
 from slixmpp import stanza
-from slixmpp.componentxmpp import ComponentXMPP
 
 # temporary matrix library
-from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomSendResponse, RoomMessageNotice
-
-# make fetching shit work
-import httpx
+from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice
 
 # database
 from psycopg.errors import UniqueViolation
@@ -26,15 +18,10 @@ from psycopg.errors import UniqueViolation
 import util
 from db import KoishiDB
 from webserver import KoishiWebserver
+from xmpp import KoishiComponent
 
 # collect background tasks
 background_tasks = set()
-
-# connect=5.0: Wait max 5s to establish connection
-# read=300.0: Wait max 5 mins for data to arrive (or set to None for infinite)
-# write=5.0: Wait max 5s to send request
-# pool=5.0: Wait max 5s to get a connection from the pool
-timeout_config = httpx.Timeout(300.0, connect=5.0)
 
 # get login details
 with open('login.json', 'r', encoding='utf-8') as login_file:
@@ -52,12 +39,9 @@ webserver: KoishiWebserver = KoishiWebserver(db, login['matrix']['domain'])
 xmpp_side = None
 matrix_side = None
 
-xmpp_side_started = asyncio.Event()
-
 # basic deduplication
 bridged_jnics: set[str] = set()
 bridged_jids: set[str] = set()
-bridged_stanzaid: set[str] = set()
 bridged_mx_eventid: set[str] = set()
 
 # lazy
@@ -80,7 +64,7 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
     # hold onto events until they can be bridged
-    await xmpp_side_started.wait()
+    await xmpp_side.started.wait()
 
     new_bridged_muc_jid = util.escape_nickname(
         "chaos@group.pain.agency",
@@ -266,7 +250,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
     # hold onto events until they can be bridged
-    await xmpp_side_started.wait()
+    await xmpp_side.started.wait()
 
     jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
 
@@ -441,6 +425,7 @@ async def nio_main() -> None:
     matrix_side = AsyncClient(
         login['matrix']['domain'], login['matrix']['mxid'])
     webserver.set_matrix_side(matrix_side)
+    xmpp_side.set_matrix_side(matrix_side)
     matrix_side.add_event_callback(
         message_callback,  # callback that throws it into a thread
         (RoomMessageText, RoomMessageNotice)  # types to handle
@@ -465,335 +450,28 @@ async def nio_main() -> None:
     await matrix_side.sync_forever(timeout=30000)
 
 
-class EchoComponent(ComponentXMPP):
-    def __init__(self, jid, secret, server, port):
-        ComponentXMPP.__init__(self, jid, secret, server, port)
-
-        self.add_event_handler('session_start', self.start)
-        self.add_event_handler("message", self.message)
-        self.add_event_handler("message_error", self.message_error)
-
-        # Register plugins
-        self.register_plugin('xep_0030')  # Service Discovery (Disco)
-        self.register_plugin('xep_0004')  # Data Forms
-        self.register_plugin('xep_0060')  # Publish-Subscribe
-        self.register_plugin('xep_0199')  # XMPP Ping
-        self.register_plugin('xep_0045')  # Multi-User Chat (MUC)
-        self.register_plugin('xep_0461')  # Message Replies
-        self.register_plugin('xep_0428')  # Fallback Indication
-        self.register_plugin('xep_0359')  # Unique and Stable Stanza IDs
-        self.register_plugin('xep_0066')  # Out of Band Data
-
-    async def start(self, _):
-        self.send_presence()
-
-        # set started flag for async loop
-        xmpp_side_started.set()
-
-        self['xep_0030'].add_identity(
-            category='gateway',
-            itype='matrix',      # This triggers the Matrix icon in clients
-            name='Koishi Matrix Bridge'
-        )
-
-        # Always register disco#info and disco#items
-        self['xep_0030'].add_feature('http://jabber.org/protocol/disco#info')
-        self['xep_0030'].add_feature('http://jabber.org/protocol/disco#items')
-
-        print("XMPP Component Joined")
-
-    async def message_error(self, msg):
-        # TODO: look up from, should be muc jid corresponding to matrix id
-        ET.indent(msg.xml, space="  ")
-        await matrix_side.room_send(
-            room_id="!odwJFwanVTgIblSUtg:matrix.org",
-            message_type="m.room.message",
-            content={
-                "msgtype": "m.text",
-                "m.relates_to": {
-                    "m.in_reply_to": {
-                        "event_id": msg['id'],
-                    },
-                },
-                "body": str(msg)
-            },
-        )
-
-    # Change 'def' to 'async def' so you can use 'await' inside
-    async def message(self, msg):
-        # TODO figure out how to hold until it comes online, a la mutex or js promise
-
-        if matrix_side is None:
-            print("Not sending to matrix because offline")
-            return
-
-        # blank sender
-        msg_from = msg.get('from', '')
-        if msg_from == '':
-            return
-
-        match(msg.get_type()):
-            case ('groupchat'):
-
-                # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
-                stanzaid = msg.get('stanza_id', {}).get('id')
-                if stanzaid is None or stanzaid in bridged_stanzaid:
-                    return
-                bridged_stanzaid.add(stanzaid)
-
-                if msg.get('id', '') in bridged_mx_eventid:
-                    try:
-                        await db.set_xmpp_stanzaid(stanzaid, msg.get('id', ''))
-                    except Exception as e:
-                        print(e)
-                    finally:
-                        bridged_mx_eventid.remove(msg.get('id', ''))
-                        try:
-                            await matrix_side.room_read_markers(
-                                "!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
-                        except Exception as _:
-                            pass
-                        finally:
-                            # if its in the map can short circut regardless of the return
-                            # pylint: disable=return-in-finally
-                            # pylint: disable=lost-exception
-                            return
-
-                # ignore all puppets
-                # TODO clean this up
-                if msg_from.resource in bridged_jnics or msg_from.bare in bridged_jids:
-                    return
-
-                xmpp_replyto_id = msg.get('reply', {}).get('id')
-                matrix_replyto_id = None
-                replyto_mxid = None
-                result = None
-                if xmpp_replyto_id:
-                    try:
-                        result = await db.get_matrix_reply_data(xmpp_replyto_id)
-                    except Exception as e:
-                        print(e)
-
-                if result:
-                    if len(result) > 1:
-                        matrix_replyto_id, replyto_mxid, *_ = result
-                    else:
-                        matrix_replyto_id = result[0]
-
-                fallback_range = msg['fallback']['body']
-                b = msg.get('body', 'No body found !?')
-                if fallback_range == '':
-                    body = b
-                else:
-                    # get start and end of the fallback
-                    start = int(fallback_range.get('start', 0))
-                    end = int(fallback_range.get('end', 0))
-
-                    # sanity check ranges
-                    if end <= start or not start < len(b) or not end < len(b):
-                        body = b
-                    else:
-                        # cut around range
-                        if start > 0:
-                            part1 = b[:start]
-                        else:
-                            part1 = ''
-                        part2 = b[end:]
-
-                        body = part1 + part2
-
-                url: str | None = msg.get('oob', {}).get('url')
-                if not url:
-                    try:
-                        # You must 'await' this, otherwise the message is never sent!
-                        resp: RoomSendResponse = await matrix_side.room_send(
-                            room_id="!odwJFwanVTgIblSUtg:matrix.org",
-                            message_type="m.room.message",
-                            content={
-                                "msgtype": "m.text",
-                                "body": f"{msg['from'].resource}:\n{body}",
-                                # TODO: properly parse out mentions based on bridged displayname
-                                ** (
-                                    {
-                                        "m.mentions": {
-                                            "user_ids": [
-                                                replyto_mxid
-                                            ],
-                                        },
-                                    } if replyto_mxid else {}
-                                ),
-                                ** (
-                                    {
-                                        "m.relates_to": {
-                                            "m.in_reply_to": {
-                                                "event_id": matrix_replyto_id
-                                            },
-                                        },
-                                    } if matrix_replyto_id else {}
-                                ),
-                            }
-                        )
-                    except Exception as e:
-                        print(e)
-                        return
-
-                    try:
-                        await db.insert_message_mapping(
-                            stanzaid,
-                            resp.event_id,
-                            body,
-                            str(msg['from'])
-                        )
-                    except Exception as e:
-                        self['xep_0461'].make_reply(
-                            msg['from'],
-                            stanzaid,
-                            body,
-                            mto="chaos@group.pain.agency",
-                            mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
-                            mtype='groupchat',
-                            mfrom="koishi.pain.agency",
-                        )
-                        return
-
-                else:
-
-                    # xmpp clients just get this information from the url so we have to add it
-                    filename: str = url.split('/')[-1]
-                    mime_type, _ = mimetypes.guess_type(filename)
-                    if mime_type is None:
-                        mime_type = "application/octet-stream"
-                    main_type, _ = mime_type.split('/')
-
-                    try:
-                        resp: RoomSendResponse = await matrix_side.room_send(
-                            room_id="!odwJFwanVTgIblSUtg:matrix.org",
-                            message_type="m.room.message",
-                            content={
-                                "msgtype": "m.text",
-                                "body": f"{msg['from'].resource} sent a(n) {mime_type}",
-                                # TODO: properly parse out mentions based on bridged displayname
-                                ** (
-                                    {
-                                        "m.mentions": {
-                                            "user_ids": [
-                                                replyto_mxid,
-                                            ],
-                                        },
-                                    } if replyto_mxid else {}
-                                ),
-                                ** (
-                                    {
-                                        "m.relates_to": {
-                                            "m.in_reply_to": {
-                                                "event_id": matrix_replyto_id
-                                            },
-                                        },
-                                    } if matrix_replyto_id else {}
-                                ),
-                            },
-                        )
-                    except Exception as e:
-                        print(e)
-                        return
-
-                    file_id = str(uuid.uuid4())
-
-                    try:
-                        await db.insert_xmpp_media_message_mapping(
-                            stanzaid, url, file_id,
-                            body, msg['from']
-                        ),
-
-                    except Exception as e:
-                        self['xep_0461'].make_reply(
-                            msg['from'],
-                            stanzaid,
-                            body,
-                            mto="chaos@group.pain.agency",
-                            mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
-                            mtype='groupchat',
-                            mfrom="koishi.pain.agency",
-                        )
-                        return
-
-                    try:
-                        resp: RoomSendResponse = await matrix_side.room_send(
-                            room_id="!odwJFwanVTgIblSUtg:matrix.org",
-                            message_type="m.room.message",
-                            content={
-                                "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
-                                "body": body,
-                                "url": f"mxc://{login['http_domain']}/{file_id}",
-                                "info": {"mimetype": mime_type},
-                                "filename:": filename
-                            },
-                        )
-                    except Exception as e:
-                        self['xep_0461'].make_reply(
-                            msg['from'],
-                            stanzaid,
-                            body,
-                            mto="chaos@group.pain.agency",
-                            mbody=f"could not bridge message because of matrix error of type {type(e)}\n{e}",
-                            mtype='groupchat',
-                            mfrom="koishi.pain.agency",
-                        )
-                        return
-
-                    try:
-                        await db.set_mtrx_eventid(resp.event_id, stanzaid)
-                    except Exception as e:
-                        self['xep_0461'].make_reply(
-                            msg['from'],
-                            stanzaid,
-                            body,
-                            mto="chaos@group.pain.agency",
-                            mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
-                            mtype='groupchat',
-                            mfrom="koishi.pain.agency",
-                        )
-                        return
-
-                print(resp)
-
-
 async def main():
     global xmpp_side
+
+    # Initialize XMPP
+    xmpp_side = KoishiComponent(
+        db,
+        login['xmpp']['jid'],
+        login['xmpp']['secret'],
+        login['xmpp']['domain'],
+        login['http_domain'],
+        login['xmpp']['port'],
+        bridged_jnics,
+        bridged_jids,
+        bridged_mx_eventid,
+    )
 
     # Setup Logging
     logging.basicConfig(level=logging.DEBUG,
                         format='%(levelname)-8s %(message)s')
 
-    # Initialize XMPP
-    xmpp_side = EchoComponent(
-        login['xmpp']['jid'],
-        login['xmpp']['secret'],
-        login['xmpp']['domain'],
-        login['xmpp']['port'],
-    )
-
-    await db.connect()
-
     # This attaches XMPP to the event loop in the background.
-    xmpp_side.connect()
-
-    # Perform initial sends
-    # TODO: remove
-    xmpp_side.send_message(
-        mto="jjj333@pain.agency",
-        mbody="fart",
-        mfrom=login['xmpp']['jid'],
-    )
-
-    await xmpp_side.plugin['xep_0045'].join_muc(
-        room="chaos@group.pain.agency",  # TODO: fix
-        nick=login.get(
-            'vanity_name',
-            '‼️ "vanity_name" field missing from login.json'
-        ),
-        pfrom=login['xmpp']['jid'],
-    )
+    await db.connect()
 
     # Run Matrix (This blocks forever, keeping the script alive)
     # Since we are inside the same asyncio loop, XMPP will keep working
@@ -803,6 +481,7 @@ async def main():
         await asyncio.gather(
             nio_main(),
             webserver.serve(port=4567, log_level="info"),
+            xmpp_side.connect()
         )
     except asyncio.CancelledError:
         # This handles the internal signal that asyncio uses to stop
