@@ -193,43 +193,43 @@ class KoishiWebserver:
                 try:
                     filepath, _ = await download_task
                 except httpx.HTTPStatusError as e:
-                    print(
-                        f"Failed to fullfill get request for id {media_id} ({mxc}) due to upstream error\n{e}")
+                    e_str = f"Failed to fullfill get request for id {media_id} ({mxc}) due to upstream error \n {e.response.reason_phrase}"
+                    print(e_str)
                     return JSONResponse(
                         status_code=e.response.status_code,
                         content={
-                            "error": e.response.reason_phrase,
+                            "error": e_str,
                             "upstream_status": e.response.status_code
                         }
                     )
 
                 except httpx.RequestError as e:
-                    # Network errors become 502 Bad Gateway
-                    print(
-                        f"Failed to fullfill get request for id {media_id} ({mxc}) due to upstream error\n{e}")
+                    e_str = f"Failed to fullfill get request for id {media_id} ({mxc}) due to upstream error \n {e}"
+                    print(e_str)
                     return JSONResponse(
                         status_code=523,
                         content={
-                            "error": str(e)
+                            "error": e_str
                         }
                     )
 
                 except ValueError as e:
                     # File size errors become 413 Payload Too Large
-                    print(
-                        f"Failed to fullfill get request for id {media_id} ({mxc}) due to too large of a response\n{e}")
+                    e_str = f"Failed to fullfill get request for id {media_id} ({mxc}) due to too large of a response \n {e}"
+                    print(e_str)
                     return JSONResponse(
                         status_code=413,
                         content={
-                            "error": str(e)
+                            "error": e_str
                         }
                     )
                 except Exception as e:
-                    print(e.with_traceback(None))
+                    e_str = str(e.with_traceback(None))
+                    print(e_str)
                     return JSONResponse(
                         status_code=500,
                         content={
-                            "error": str(e.with_traceback(None))
+                            "error": e_str
                         }
                     )
 
