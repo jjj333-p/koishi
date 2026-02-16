@@ -240,10 +240,23 @@ class KoishiWebserver:
                 filename=file_name,
                 media_type=mime_type or "application/octet-stream",
                 headers={
-                    # TODO: acl for browsers
+                    # CORS: Allows browsers to access the resource from specific origins
+                    # Use '*' so that webclients can access it
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+
+                    # This line tells the browser: "It's okay to let JS see these headers"
+                    'Access-Control-Expose-Headers': 'Content-Disposition, Content-Length',
+
+                    # Caching: Long-term immutable cache
                     'Cache-Control': 'public, max-age=31536000, immutable',
-                    "Content-Disposition": "inline"
-                    # 'ETag': cached_meta.get('etag', ''),
+
+                    # inline vs attachment:
+                    # 'inline' attempts to display in browser; 'attachment' forces download.
+                    "Content-Disposition": f'inline; filename="{file_name}"',
+
+                    # Security: Prevents the browser from "sniffing" the MIME type
+                    'X-Content-Type-Options': 'nosniff',
                 }
             )
 
