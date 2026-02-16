@@ -146,9 +146,7 @@ class KoishiComponent(ComponentXMPP):
                             pass
                         finally:
                             # if its in the map can short circut regardless of the return
-                            # pylint: disable=return-in-finally
-                            # pylint: disable=lost-exception
-                            return
+                            return  # pylint: disable=return-in-finally, lost-exception
 
                 # ignore all puppets
                 # TODO clean this up
