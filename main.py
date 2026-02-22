@@ -452,6 +452,7 @@ async def receipt_handler(room: MatrixRoom, event: Receipt):
     xmpp_side.plugin['xep_0333'].send_marker(
         mto="chaos@group.pain.agency",  # TODO
         id=stanza_id,
+        mtype="groupchat",
         marker="displayed",
         mfrom=jid
     )
