@@ -450,7 +450,7 @@ async def receipt_handler(room: MatrixRoom, event: Receipt):
         return
 
     xmpp_side.plugin['xep_0333'].send_marker(
-        mto=reply_jid,  # TODO
+        mto="chaos@group.pain.agency",  # TODO
         id=stanza_id,
         marker="displayed",
         mfrom=jid
