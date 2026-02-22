@@ -227,6 +227,14 @@ class KoishiComponent(ComponentXMPP):
                         print(e)
                         return
 
+                    self.plugin['xep_0333'].send_marker(
+                        mto="chaos@group.pain.agency",  # TODO
+                        id=stanzaid,
+                        mtype="groupchat",
+                        marker="displayed",
+                        mfrom="koishi.pain.agency"  # TODO
+                    )
+
                     try:
                         await self.db.insert_message_mapping(
                             stanzaid,
@@ -330,6 +338,14 @@ class KoishiComponent(ComponentXMPP):
                             mfrom="koishi.pain.agency",
                         )
                         return
+
+                    self.plugin['xep_0333'].send_marker(
+                        mto="chaos@group.pain.agency",  # TODO
+                        id=stanzaid,
+                        mtype="groupchat",
+                        marker="displayed",
+                        mfrom="koishi.pain.agency"  # TODO
+                    )
 
                     try:
                         await self.db.set_mtrx_eventid(resp.event_id, stanzaid)
