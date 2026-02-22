@@ -10,7 +10,7 @@ import urllib
 from slixmpp import stanza
 
 # temporary matrix library
-from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice
+from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice, Receipt, ReceiptEvent
 
 # database
 from psycopg.errors import UniqueViolation
@@ -419,6 +419,60 @@ async def media_callback(room, event) -> None:
     task.add_done_callback(background_tasks.discard)
 
 
+async def receipt_handler(room: MatrixRoom, event: Receipt):
+
+    assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
+
+    # hold onto events until they can be bridged
+    await xmpp_side.started.wait()
+
+    jid = f"{event.user_id[1:].replace(':','_')}@{login['xmpp']['jid']}"
+
+    # dont proceede if a join is in progress
+    if is_joining.get(jid) is not None:
+        await is_joining[jid].wait()
+
+    # join puppet logic
+    if not jid in bridged_jids:
+        return
+
+    stanza_id = None
+    reply_jid = None
+
+    result = await db.get_xmpp_reply_data(event.event_id)
+
+    if result:
+        if len(result) > 2:
+            stanza_id, reply_jid, *_ = result
+        else:
+            stanza_id = result[0]
+    else:
+        return
+
+    xmpp_side.plugin['xep_0333'].send_marker(
+        mto=reply_jid,  # TODO
+        id=stanza_id,
+        marker="displayed",
+        mfrom=jid
+    )
+
+
+async def receipt_callback(room: MatrixRoom, events: ReceiptEvent):
+    for event in events.receipts:
+
+        # only receipt type we care about
+        if event.receipt_type != "m.read":
+            return
+
+        # temporary until appservice is used
+        if event.user_id == login['matrix']['mxid']:
+            return
+
+        task: asyncio.Task = asyncio.create_task(receipt_handler(room, event))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+
+
 async def nio_main() -> None:
     global matrix_side  # <--- THIS IS MISSING
 
@@ -433,6 +487,10 @@ async def nio_main() -> None:
     matrix_side.add_event_callback(
         media_callback,  # callback that throws it into a thread
         RoomMessageMedia  # type to handle
+    )
+    matrix_side.add_ephemeral_callback(
+        receipt_callback,
+        ReceiptEvent
     )
 
     await matrix_side.login(login['matrix']['password'])

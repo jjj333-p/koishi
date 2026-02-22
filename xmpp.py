@@ -32,6 +32,8 @@ class KoishiComponent(ComponentXMPP):
         self.db: KoishiDB = db
         self.http_domain: str = http_domain
 
+        self.ignore_error_ids: set[str] = set()
+
         # TODO: change when matrix side is wraped up in a nice object
         self.bridged_jnics: set[str] = bridged_jnics
         self.bridged_jids: set[str] = bridged_jids
@@ -55,6 +57,7 @@ class KoishiComponent(ComponentXMPP):
         self.register_plugin('xep_0428')  # Fallback Indication
         self.register_plugin('xep_0359')  # Unique and Stable Stanza IDs
         self.register_plugin('xep_0066')  # Out of Band Data
+        self.register_plugin('xep_0333')  # displayed indicator
 
         self.matrix_side = None
 
@@ -95,6 +98,10 @@ class KoishiComponent(ComponentXMPP):
 
     async def message_error(self, msg):
         # TODO: look up from, should be muc jid corresponding to matrix id
+
+        if msg['id'] == '' or msg['id'] in self.ignore_error_ids:
+            return
+
         ET.indent(msg.xml, space="  ")
         await self.matrix_side.room_send(
             room_id="!odwJFwanVTgIblSUtg:matrix.org",
