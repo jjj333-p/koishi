@@ -419,7 +419,7 @@ async def media_callback(room, event) -> None:
     task.add_done_callback(background_tasks.discard)
 
 
-async def receipt_handler(room: MatrixRoom, event: Receipt):
+async def receipt_handler(_: MatrixRoom, event: Receipt):
 
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
@@ -437,15 +437,11 @@ async def receipt_handler(room: MatrixRoom, event: Receipt):
         return
 
     stanza_id = None
-    reply_jid = None
 
     result = await db.get_xmpp_reply_data(event.event_id)
 
     if result:
-        if len(result) > 2:
-            stanza_id, reply_jid, *_ = result
-        else:
-            stanza_id = result[0]
+        stanza_id = result[0]
     else:
         return
 
