@@ -44,6 +44,7 @@ Ranked by priority, marked by percieved difficulty if you wanted to PR
     - Preferred to be able to configure it through the bot for public instances (perhaps not worth it)
 - Add puppeting on Matrix side (medium - high)
     - bridge read receipts XMPP -> Matrix
+- bridge formatting (mostly annoying, should be simple though, if its easier just write 2 functions to go both ways and i can hook it up)
 - bridge pfps (annoying, but prob not hard)
 - Add IRC support (???)
 
