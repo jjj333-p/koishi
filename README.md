@@ -35,6 +35,7 @@ Ranked by priority, marked by percieved difficulty if you wanted to PR
 
 - Bridge message deletes (low-medium difficulty)
     - Incl. Deleting media record (+ difficulty)
+    - retractions not planned due to implementation difficulty (requires verifying sender by occupant id which we dont store)
 - Bridge Bans (Difficult)
 - Bridge Reactions (medium, requires storing in db due to different formats)
     - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
