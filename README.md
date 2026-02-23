@@ -25,6 +25,7 @@ Licensed under AGPLv3
         - fake Auth Media + redirect to original url for XMPP -> Matrix bridging
         - download and re-serve matrix media to a url for XMPP
     - read receipt on matrix side to confirm delivery to XMPP
+    - read receipt bridging from Matrix to XMPP
 <img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
 <img width="1091" height="521" alt="image" src="https://github.com/user-attachments/assets/ebf82ec6-6644-457f-9148-c2cac930501e" />
 
@@ -35,13 +36,13 @@ Ranked by priority, marked by percieved difficulty if you wanted to PR
 - Bridge message deletes (low-medium difficulty)
     - Incl. Deleting media record (+ difficulty)
 - Bridge Bans (Difficult)
-- Bridge Read Receipts (easy)
 - Bridge Reactions (medium, requires storing in db due to different formats)
     - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
 - Configurability of rooms (low-high depending)
     - moving room bridging config to config file may be a decent stopgap
     - Preferred to be able to configure it through the bot for public instances (perhaps not worth it)
 - Add puppeting on Matrix side (medium - high)
+    - bridge read receipts XMPP -> Matrix
 - bridge pfps (annoying, but prob not hard)
 - Add IRC support (???)
 
