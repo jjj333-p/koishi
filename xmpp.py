@@ -56,6 +56,9 @@ class KoishiComponent(ComponentXMPP):
         self.register_plugin('xep_0359')  # Unique and Stable Stanza IDs
         self.register_plugin('xep_0066')  # Out of Band Data
         self.register_plugin('xep_0333')  # displayed indicator
+        self.register_plugin('xep_0422')  # message fastening
+        self.register_plugin('xep_0424')  # message retraction
+        self.register_plugin('xep_0425')  # message moderation
 
         self.matrix_side = None
 
@@ -111,7 +114,29 @@ class KoishiComponent(ComponentXMPP):
             },
         )
 
+    async def bridge_redaction(self, stanza_id: str, reason: str) -> None:
+
+        result = None
+        event_id = None
+        try:
+            result = await self.db.get_matrix_reply_data(stanza_id)
+        except Exception as e:
+            print(e)
+
+        if result:
+            event_id = result[0]
+
+        if not event_id:
+            return
+
+        await self.matrix_side.room_redact(
+            room_id='!odwJFwanVTgIblSUtg:matrix.org',  # TODO
+            event_id=event_id,
+            reason=reason
+        )
+
     # Change 'def' to 'async def' so you can use 'await' inside
+
     async def message(self, msg):
         # TODO figure out how to hold until it comes online, a la mutex or js promise
 
@@ -122,6 +147,9 @@ class KoishiComponent(ComponentXMPP):
         # blank sender
         msg_from = msg.get('from', '')
         if msg_from == '':
+            return
+
+        if msg.get('to') != "koishi.pain.agency":  # TODO dont hardcode
             return
 
         match(msg.get_type()):
