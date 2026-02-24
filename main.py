@@ -87,8 +87,16 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     if is_joining.get(jid) is not None:
         await is_joining[jid].wait()
 
+    this_cached_nick = cached_matrix_nick.get(event.sender)
+
     # puppet joining logic
-    if new_bridged_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids or event.body.startswith("!join"):
+    if new_bridged_nick != this_cached_nick or not jid in bridged_jids or event.body.startswith("!join"):
+
+        if this_cached_nick:
+            try:
+                bridged_jnics.remove(this_cached_nick)
+            except Exception as e:
+                print("cannot remove nick from cache", e)
 
         # avoid duplicate joins
         asyncio_event = is_joining.get(jid)
