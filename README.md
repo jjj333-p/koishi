@@ -26,6 +26,8 @@ Licensed under AGPLv3
         - download and re-serve matrix media to a url for XMPP
     - read receipt on matrix side to confirm delivery to XMPP
     - read receipt bridging from Matrix to XMPP
+- moderations from XMPP bridged to matrix
+    - TODO: ensure server support, delete mapping from db
 <img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
 <img width="1091" height="521" alt="image" src="https://github.com/user-attachments/assets/ebf82ec6-6644-457f-9148-c2cac930501e" />
 

@@ -42,6 +42,7 @@ class KoishiComponent(ComponentXMPP):
         self.add_event_handler('session_start', self.start)
         self.add_event_handler("message", self.message)
         self.add_event_handler("message_error", self.message_error)
+        self.add_event_handler("moderated_message", self.moderated_message)
 
         self.started: asyncio.Event = asyncio.Event()
 
@@ -114,7 +115,35 @@ class KoishiComponent(ComponentXMPP):
             },
         )
 
-    async def bridge_redaction(self, stanza_id: str, reason: str) -> None:
+    async def moderated_message(self, msg):
+
+        if self.matrix_side is None:
+            print("Not sending to matrix because offline")
+            return
+
+        # blank sender
+        msg_from = msg.get('from', '')
+        if msg_from == '':
+            return
+
+        if msg.get('to') != "koishi.pain.agency":  # TODO dont hardcode
+            return
+
+        # TODO check for server support and ignore if none
+
+        retract = msg.get('retract', {})
+
+        moderated = retract.get('moderated')
+        if not moderated:
+            return
+
+        stanza_id = retract.get('id')
+        if not stanza_id:
+            return
+
+        by_readable = retract['by']  # TODO if none, look up occupant id
+        by_id = moderated.get('occupant-id', {}).get('id')
+        reason = retract['reason']
 
         result = None
         event_id = None
@@ -132,10 +161,8 @@ class KoishiComponent(ComponentXMPP):
         await self.matrix_side.room_redact(
             room_id='!odwJFwanVTgIblSUtg:matrix.org',  # TODO
             event_id=event_id,
-            reason=reason
+            reason=f"Moderated by {by_readable} ({by_id}) with reason: {reason}",
         )
-
-    # Change 'def' to 'async def' so you can use 'await' inside
 
     async def message(self, msg):
         # TODO figure out how to hold until it comes online, a la mutex or js promise
