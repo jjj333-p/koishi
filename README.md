@@ -26,17 +26,17 @@ Licensed under AGPLv3
         - download and re-serve matrix media to a url for XMPP
     - read receipt on matrix side to confirm delivery to XMPP
     - read receipt bridging from Matrix to XMPP
-- moderations from XMPP bridged to matrix
-    - TODO: ensure server support, delete mapping from db
 <img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
 <img width="1091" height="521" alt="image" src="https://github.com/user-attachments/assets/ebf82ec6-6644-457f-9148-c2cac930501e" />
+- bridging of moderations/redactions
+    - TODO: ensure server support, delete mapping from db
+<img width="1302" height="926" alt="image" src="https://github.com/user-attachments/assets/691c4b52-1af1-44a2-8b6d-fb115e088404" />
 
  
 ## TODO:
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
-- Bridge message deletes (low-medium difficulty)
-    - Incl. Deleting media record (+ difficulty)
+- When bridging message deletions, delete record from db to remove media redirect
     - retractions not planned due to implementation difficulty (requires verifying sender by occupant id which we dont store)
 - Bridge Bans (Difficult)
 - Bridge Reactions (medium, requires storing in db due to different formats)
