@@ -121,7 +121,7 @@ class KoishiComponent(ComponentXMPP):
             print("Not sending to matrix because offline")
             return
 
-        # blank sender
+        # TODO: map this to room
         msg_from = msg.get('from', '')
         if msg_from == '':
             return
