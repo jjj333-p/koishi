@@ -7,10 +7,10 @@ import uuid
 import urllib
 
 # xmpp library
-from slixmpp import stanza
+from slixmpp import stanza, JID
 
 # temporary matrix library
-from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice, Receipt, ReceiptEvent
+from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice, Receipt, ReceiptEvent, RedactionEvent
 
 # database
 from psycopg.errors import UniqueViolation
@@ -40,8 +40,8 @@ xmpp_side = None
 matrix_side = None
 
 # basic deduplication
-bridged_jnics: set[str] = set()
-bridged_jids: set[str] = set()
+bridged_jnics: set[str] = set(("Koishi Bridge",),)  # TODO
+bridged_jids: set[str] = set(("koishi.pain.agency",),)
 bridged_mx_eventid: set[str] = set()
 
 # lazy
@@ -478,6 +478,39 @@ async def receipt_callback(room: MatrixRoom, events: ReceiptEvent):
         task.add_done_callback(background_tasks.discard)
 
 
+async def redaction_handler(room: MatrixRoom, event: RedactionEvent):
+
+    # temporary until appservice is used
+    if event.sender == login['matrix']['mxid']:
+        return
+
+    result = None
+    stanza_id = None
+    try:
+        result = await db.get_xmpp_reply_data(event.redacts)
+    except Exception as e:
+        print(e)
+
+    if result:
+        stanza_id = result[0]
+
+    if not stanza_id:
+        return
+
+    await xmpp_side['xep_0425'].moderate(
+        room=JID("chaos@group.pain.agency"),  # str causes errors
+        id=stanza_id,
+        reason=f"redacted by {event.sender} with reason: {event.reason or '<No reason provided.>'}",
+        ifrom="koishi.pain.agency"
+    )
+
+
+async def redaction_callback(room: MatrixRoom, event: RedactionEvent):
+    task: asyncio.Task = asyncio.create_task(redaction_handler(room, event))
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+
 async def nio_main() -> None:
     global matrix_side  # <--- THIS IS MISSING
 
@@ -492,6 +525,10 @@ async def nio_main() -> None:
     matrix_side.add_event_callback(
         media_callback,  # callback that throws it into a thread
         RoomMessageMedia  # type to handle
+    )
+    matrix_side.add_event_callback(
+        redaction_callback,
+        RedactionEvent
     )
     matrix_side.add_ephemeral_callback(
         receipt_callback,

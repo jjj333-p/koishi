@@ -161,7 +161,7 @@ class KoishiComponent(ComponentXMPP):
         await self.matrix_side.room_redact(
             room_id='!odwJFwanVTgIblSUtg:matrix.org',  # TODO
             event_id=event_id,
-            reason=f"Moderated by {by_readable} ({by_id}) with reason: {reason}",
+            reason=f"Moderated by {by_readable} ({by_id}) with reason: {reason or '<No reason provided.>'}",
         )
 
     async def message(self, msg):
