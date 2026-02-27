@@ -3,6 +3,7 @@
 import json
 import logging
 import asyncio
+import os
 import uuid
 import urllib
 
@@ -479,30 +480,102 @@ async def receipt_callback(room: MatrixRoom, events: ReceiptEvent):
 
 
 async def redaction_handler(room: MatrixRoom, event: RedactionEvent):
-
-    # temporary until appservice is used
+    # Skip if the redaction was sent by the bridge itself
     if event.sender == login['matrix']['mxid']:
         return
 
-    result = None
-    stanza_id = None
+    # delete record from db so that bridged media link is broken
     try:
-        result = await db.get_xmpp_reply_data(event.redacts)
+        result = await db.delete_media(event_id=event.redacts)
     except Exception as e:
-        print(e)
-
-    if result:
-        stanza_id = result[0]
-
-    if not stanza_id:
+        await matrix_side.room_send(
+            room_id=room.room_id,
+            message_type="m.room.message",
+            content={
+                "msgtype": "m.text",
+                "m.mentions": {
+                    "user_ids": [
+                        event.sender
+                    ]
+                },
+                "m.relates_to": {
+                    "m.in_reply_to": {
+                        "event_id": event.event_id
+                    }
+                },
+                "body": f"Could not bridge your redaction because of database error of type {type(e)}. error:\n{e}",
+            }
+        )
         return
 
-    await xmpp_side['xep_0425'].moderate(
-        room=JID("chaos@group.pain.agency"),  # str causes errors
-        id=stanza_id,
-        reason=f"redacted by {event.sender} with reason: {event.reason or '<No reason provided.>'}",
-        ifrom="koishi.pain.agency"
-    )
+    # the message may not be bridged or may have already been removed
+    if not result:
+        return
+
+    # data from the db we care about
+    stanza_id = result.get('stanza_id')
+    cached_path = result.get('path')
+
+    # Cleanup local files if this was a media message
+    del_task = None
+    if cached_path:
+        del_task = asyncio.create_task(
+            asyncio.to_thread(util.rm_file, cached_path))
+
+    # XMPP Moderation (XEP-0425)
+    if stanza_id:
+        try:
+            await xmpp_side['xep_0425'].moderate(
+                room=JID("chaos@group.pain.agency"),
+                id=stanza_id,
+                reason=f"redacted by {event.sender}: {event.reason or '<No reason provided.>'}",
+                ifrom="koishi.pain.agency"
+            )
+        except Exception as e:
+            await matrix_side.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.mentions": {
+                        "user_ids": [
+                            event.sender
+                        ]
+                    },
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event.event_id
+                        }
+                    },
+                    "body": f"Could not bridge your redaction because of xmpp error of type {type(e)}. error:\n{e}",
+                }
+            )
+            return
+
+    # catch any fs error
+    if del_task:
+        try:
+            await del_task
+        except Exception as e:
+            await matrix_side.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.mentions": {
+                        "user_ids": [
+                            event.sender
+                        ]
+                    },
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event.event_id
+                        }
+                    },
+                    "body": f"Could not bridge your redaction because of filesystem error of type {type(e)}. error:\n{e}",
+                }
+            )
+            return
 
 
 async def redaction_callback(room: MatrixRoom, event: RedactionEvent):

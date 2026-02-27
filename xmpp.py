@@ -13,6 +13,8 @@ from nio import RoomSendResponse
 # for the typehint of the custom db class
 from db import KoishiDB
 
+import util
+
 
 class KoishiComponent(ComponentXMPP):
     def __init__(
@@ -142,27 +144,74 @@ class KoishiComponent(ComponentXMPP):
             return
 
         by_readable = retract['by']  # TODO if none, look up occupant id
-        by_id = moderated.get('occupant-id', {}).get('id')
+        by_id = moderated.get('occupant-id', {}).get('id', 'unknown')
         reason = retract['reason']
 
+        # delete record in db
         result = None
-        event_id = None
         try:
-            result = await self.db.get_matrix_reply_data(stanza_id)
+            # We search by stanza_id here because the moderation came from XMPP
+            result = await self.db.delete_media(stanza_id=stanza_id)
         except Exception as e:
-            print(e)
-
-        if result:
-            event_id = result[0]
-
-        if not event_id:
+            # If the DB fails, we still try to inform XMPP that bridging failed
+            self['xep_0461'].make_reply(
+                msg['from'],
+                stanza_id,
+                "",  # body
+                mto="chaos@group.pain.agency",
+                mbody=f"Bridge DB error during moderation: {type(e).__name__}: {e}",
+                mtype='groupchat',
+                mfrom="koishi.pain.agency",
+            )
             return
 
-        await self.matrix_side.room_redact(
-            room_id='!odwJFwanVTgIblSUtg:matrix.org',  # TODO
-            event_id=event_id,
-            reason=f"Moderated by {by_readable} ({by_id}) with reason: {reason or '<No reason provided.>'}",
-        )
+        if not result:
+            # Message wasn't in our DB, might have already been deleted or never bridged
+            return
+
+        event_id = result.get('event_id')
+        cached_path = result.get('path')
+
+        # Cleanup local files if this was a media message
+        del_task = None
+        if cached_path:
+            del_task = asyncio.create_task(
+                asyncio.to_thread(util.rm_file, cached_path))
+
+        # Perform Matrix Redaction
+        if event_id:
+            try:
+                await self.matrix_side.room_redact(
+                    room_id='!odwJFwanVTgIblSUtg:matrix.org',  # TODO: Dynamic room mapping
+                    event_id=event_id,
+                    reason=f"Moderated by {by_readable} ({by_id}): {reason or '<No reason provided.>'}",
+                )
+            except Exception as e:
+                # Log error or notify XMPP that redaction failed
+                self['xep_0461'].make_reply(
+                    msg['from'],
+                    stanza_id,
+                    "",
+                    mto="chaos@group.pain.agency",
+                    mbody=f"Bridge fs error during moderation: {type(e).__name__}: {e}",
+                    mtype='groupchat',
+                    mfrom="koishi.pain.agency",
+                )
+
+        # catch any fs error
+        if del_task:
+            try:
+                await del_task
+            except Exception as e:
+                self['xep_0461'].make_reply(
+                    msg['from'],
+                    stanza_id,
+                    "",
+                    mto="chaos@group.pain.agency",
+                    mbody=f"Bridge fs error during moderation: {type(e).__name__}: {e}",
+                    mtype='groupchat',
+                    mfrom="koishi.pain.agency",
+                )
 
     async def message(self, msg):
         # TODO figure out how to hold until it comes online, a la mutex or js promise

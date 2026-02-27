@@ -127,7 +127,7 @@ class KoishiDB:
                 # there should only be one result available
                 fetch = await cursor.fetchone()
 
-        if len(fetch) != 3:
+        if fetch and len(fetch) != 3:
             raise ValueError(
                 f"expected response from database containing 3 values, got length {len(fetch)}: {str(fetch)}")
         return fetch
@@ -273,3 +273,44 @@ class KoishiDB:
                 "insert into media_mappings (xmpp_message_id, original_xmpp_media_url, bridged_matrix_media_id, body, user_jid) values (%s, %s, %s, %s, %s)",
                 (stanzaid, url, file_id, body, str(jid)),
             )
+
+    async def delete_media(self, stanza_id: str = None, event_id: str = None) -> dict | None:
+        """
+        Deletes a record based on xmpp_message_id or matrix_message_id.
+        Returns metadata for cleanup, or None if not found.
+        """
+        if not stanza_id and not event_id:
+            raise ValueError(
+                "You must provide either a stanza_id or an event_id.")
+
+        # Determine search criteria based on your schema
+        search_col = "xmpp_message_id" if stanza_id else "matrix_message_id"
+        search_val = stanza_id if stanza_id else event_id
+
+        async with self.db_pool.connection() as conn:
+            async with conn.cursor() as cursor:
+                # Fetch the data before deleting (Postgres allows RETURNING,
+                # but we fetch first to ensure we have the 'other' ID)
+                query = f"""
+                    SELECT xmpp_message_id, matrix_message_id, path 
+                    FROM media_mappings 
+                    WHERE {search_col} = %s
+                """
+                await cursor.execute(query, (search_val,))
+                row = await cursor.fetchone()
+
+                if not row:
+                    return None
+
+                # Perform the deletion
+                await cursor.execute(
+                    f"DELETE FROM media_mappings WHERE {search_col} = %s",
+                    (search_val,)
+                )
+
+                # Return the metadata
+                return {
+                    "stanza_id": row[0],
+                    "event_id": row[1],
+                    "path": row[2]
+                }

@@ -1,4 +1,5 @@
 import string
+import os
 from slixmpp import JID, InvalidJID
 
 
@@ -18,3 +19,15 @@ def escape_nickname(muc_jid: JID, nickname: str) -> JID:
             ) + f"-koishi-{hash(nickname)}"
 
     return jid
+
+
+def rm_file(filepath: str):
+    """
+    syncronous function to delete file, should be run in an executor
+    Args:
+        filepath: string typed path to the file
+    """
+
+    if os.path.exists(filepath):
+        os.remove(filepath)
+        print(f"Deleted cached media: {filepath}")

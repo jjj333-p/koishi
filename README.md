@@ -29,23 +29,23 @@ Licensed under AGPLv3
 <img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
 <img width="1091" height="521" alt="image" src="https://github.com/user-attachments/assets/ebf82ec6-6644-457f-9148-c2cac930501e" />
 - bridging of moderations/redactions
-    - TODO: ensure server support, delete mapping from db
+    - TODO: ensure server support
 <img width="1302" height="926" alt="image" src="https://github.com/user-attachments/assets/691c4b52-1af1-44a2-8b6d-fb115e088404" />
 
  
 ## TODO:
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
-- When bridging message deletions, delete record from db to remove media redirect
-    - retractions not planned due to implementation difficulty (requires verifying sender by occupant id which we dont store)
-- Bridge Bans (Difficult)
-- Bridge Reactions (medium, requires storing in db due to different formats)
-    - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
 - Configurability of rooms (low-high depending)
     - moving room bridging config to config file may be a decent stopgap
     - Preferred to be able to configure it through the bot for public instances (perhaps not worth it)
+- Bridge Bans (Difficult)
+- Bridge Reactions (medium, requires storing in db due to different formats)
+    - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
+- When bridging message deletions, ensure server support
 - Add puppeting on Matrix side (medium - high)
     - bridge read receipts XMPP -> Matrix
+    - use puppet to let matrix auth verify retractions
 - bridge formatting (mostly annoying, should be simple though, if its easier just write 2 functions to go both ways and i can hook it up)
 - bridge pfps (annoying, but prob not hard)
 - Add IRC support (???)
