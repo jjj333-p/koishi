@@ -70,6 +70,20 @@ class KoishiDB:
             open=False,
         )
 
+    async def connect(self) -> None:
+        """
+        tell the db pool to connect
+        Takes no arguments, returns nothing
+        """
+        await self.db_pool.open()
+
+    async def close(self) -> None:
+        """
+        tell the db pool to un-connect
+        Takes no arguments, returns nothing
+        """
+        await self.db_pool.close()
+
     async def get_original_xmpp_url(self, media_id: str) -> tuple[str | None] | None:
         """
         Lookup the opaque bridged mxc uri's media id, and return the original \
@@ -88,20 +102,6 @@ class KoishiDB:
                     (media_id,),
                 )
                 return await cursor.fetchone()
-
-    async def connect(self) -> None:
-        """
-        tell the db pool to connect
-        Takes no arguments, returns nothing
-        """
-        await self.db_pool.open()
-
-    async def close(self) -> None:
-        """
-        tell the db pool to un-connect
-        Takes no arguments, returns nothing
-        """
-        await self.db_pool.close()
 
     async def get_matrix_mediapath(
         self, xmpp_media_id: str
