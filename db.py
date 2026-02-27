@@ -111,7 +111,7 @@ class KoishiDB:
         Args:
             xmpp_media_id: UUID assigned to the bridged media.
         Returns:
-            A tuple of (mxc_uri, local_path, file_size). All can be None if not found.
+            A tuple of (mxc_uri, local_path, file_size). All can be None if not found. Guaranteed to be at least 3 values
         """
         async with self.db_pool.connection() as conn:
             async with conn.cursor() as cursor:
@@ -127,7 +127,10 @@ class KoishiDB:
                 # there should only be one result available
                 fetch = await cursor.fetchone()
 
-        if fetch and len(fetch) != 3:
+        if not fetch:
+            return (None, None, None)
+
+        if len(fetch) != 3:
             raise ValueError(
                 f"expected response from database containing 3 values, got length {len(fetch)}: {str(fetch)}")
         return fetch
