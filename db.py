@@ -1,4 +1,9 @@
 """
+Koishi Bridge software
+Copyright 2026 Joseph Winkie <jjj333.p.1325@gmail.com>
+Licensed as AGPL 3.0
+Distributed as-is and without warranty
+
 This file contains the KoishiDB class which basically just tucks away the actual sql statements
 n such that need to be executed by the connection pool. Only one table at this time, despite 
 being called "media mappings" its basically the mapping of messages and all the relevant metadata.

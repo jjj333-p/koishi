@@ -1,3 +1,10 @@
+"""
+Koishi Bridge software
+Copyright 2026 Joseph Winkie <jjj333.p.1325@gmail.com>
+Licensed as AGPL 3.0
+Distributed as-is and without warranty
+"""
+
 import mimetypes
 import uuid
 import asyncio

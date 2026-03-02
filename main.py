@@ -1,9 +1,13 @@
-#!/usr/bin/env python3
+"""
+Koishi Bridge software
+Copyright 2026 Joseph Winkie <jjj333.p.1325@gmail.com>
+Licensed as AGPL 3.0
+Distributed as-is and without warranty
+"""
 # python stdlib
 import json
 import logging
 import asyncio
-import os
 import uuid
 import urllib
 
