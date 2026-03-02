@@ -25,7 +25,7 @@ from db import KoishiDB
 
 
 class KoishiWebserver:
-    def __init__(self, db: KoishiDB, domain: str):
+    def __init__(self, db: KoishiDB, upstream_domain: str, served_domain: str):
 
         self.matrix_side = None  # TODO: fix this when its cleaned up into a nice class
 
@@ -38,15 +38,9 @@ class KoishiWebserver:
 
         @app.get("/.well-known/matrix/server")
         async def well_known_server():
-            """
-            Tells other Matrix servers where to send federation traffic.
-            This is required if your server name differs from your DNS A record
-            or if you are running on a non-standard port.
-            """
+            """Tells other Matrix servers where to send federation traffic."""
             return {
-                # CHANGE THIS: "hostname:port" of where your federation listener is reachable.
-                # If this script is behind a reverse proxy (like Nginx) handling HTTPS on port 8448:
-                "m.server": "koishi.pain.agency:443"
+                "m.server": f"{served_domain}:443"
             }
 
         @app.get("/_matrix/federation/v1/media/download/{media_id}")
@@ -123,7 +117,7 @@ class KoishiWebserver:
             # attempt to fetch missing data
             if not size:
                 originating_server, matrix_media_id = mxc.split("/")[-2:]
-                upstream_url = f"{domain}/_matrix/client/v1/media/download/{originating_server}/{matrix_media_id}"
+                upstream_url = f"{upstream_domain}/_matrix/client/v1/media/download/{originating_server}/{matrix_media_id}"
                 headers = {
                     "Authorization": f"Bearer {self.matrix_side.access_token}"}
                 try:
@@ -184,7 +178,7 @@ class KoishiWebserver:
 
                     download_task = asyncio.create_task(
                         self.download_matrix_media(
-                            domain,
+                            upstream_domain,
                             self.matrix_side.access_token,
                             mxc,
                             "./cache"  # TODO user defined cache path, in case they want to put it on second tier storage

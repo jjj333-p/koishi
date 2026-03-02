@@ -4,7 +4,7 @@ Copyright 2026 Joseph Winkie <jjj333.p.1325@gmail.com>
 Licensed as AGPL 3.0
 Distributed as-is and without warranty
 """
-
+import sys
 import mimetypes
 import uuid
 import asyncio
@@ -13,6 +13,8 @@ import xml.etree.ElementTree as ET
 
 # xmpp library
 from slixmpp.componentxmpp import ComponentXMPP
+from slixmpp import JID
+from slixmpp.types import PresenceArgs
 
 # matrix library
 from nio import RoomSendResponse
@@ -26,17 +28,24 @@ import util
 class KoishiComponent(ComponentXMPP):
     def __init__(
         self,
+        mapping_by_muc_jid: dict[JID, str],
         db: KoishiDB,
         jid,
         secret,
         server,
-        http_domain: str,
         port,
+        display_name: str,
+        http_domain: str,
         bridged_jnics: set[str],
         bridged_jids: set[str],
-        bridged_mx_eventid: set[str]
+        bridged_mx_eventid: set[str],
     ):
         ComponentXMPP.__init__(self, jid, secret, server, port)
+
+        self.jid = jid
+        self.display_name = display_name
+
+        self.mapping_by_muc: dict[JID, str] = mapping_by_muc_jid
 
         self.db: KoishiDB = db
         self.http_domain: str = http_domain
@@ -96,11 +105,22 @@ class KoishiComponent(ComponentXMPP):
             mfrom=self.jid,
         )
 
-        await self.plugin['xep_0045'].join_muc(
-            room="chaos@group.pain.agency",  # TODO: fix
-            nick="Koishi Bridge",  # TODO: this should be a param
-            pfrom=self.jid,
-        )
+        try:
+            async with asyncio.TaskGroup() as tg:
+                for muc_jid in self.mapping_by_muc:
+                    tg.create_task(
+                        self.plugin['xep_0045'].join_muc_wait(
+                            room=muc_jid,
+                            nick=self.display_name,
+                            presence_options=PresenceArgs(pfrom=self.jid)
+                        )
+                    )
+
+        except ExceptionGroup as eg:
+            # pylint: disable=not-an-iterable
+            for e in eg.exceptions:
+                print(f"Failed to join a MUC: {e}", file=sys.stderr)
+            sys.exit(1)
 
         # set started flag for async loop
         self.started.set()
@@ -108,10 +128,9 @@ class KoishiComponent(ComponentXMPP):
         print("XMPP Component Joined")
 
     async def message_error(self, msg):
-        # TODO: look up from, should be muc jid corresponding to matrix id
         ET.indent(msg.xml, space="  ")
         await self.matrix_side.room_send(
-            room_id="!odwJFwanVTgIblSUtg:matrix.org",
+            room_id=self.mapping_by_muc[msg['from'].bare],
             message_type="m.room.message",
             content={
                 "msgtype": "m.text",
@@ -130,12 +149,11 @@ class KoishiComponent(ComponentXMPP):
             print("Not sending to matrix because offline")
             return
 
-        # TODO: map this to room
         msg_from = msg.get('from', '')
         if msg_from == '':
             return
 
-        if msg.get('to') != "koishi.pain.agency":  # TODO dont hardcode
+        if msg.get('to') != self.jid:
             return
 
         # TODO check for server support and ignore if none
@@ -165,10 +183,10 @@ class KoishiComponent(ComponentXMPP):
                 msg['from'],
                 stanza_id,
                 "",  # body
-                mto="chaos@group.pain.agency",
+                mto=msg_from.bare,
                 mbody=f"Bridge DB error during moderation: {type(e).__name__}: {e}",
                 mtype='groupchat',
-                mfrom="koishi.pain.agency",
+                mfrom=self.jid,
             )
             return
 
@@ -189,7 +207,7 @@ class KoishiComponent(ComponentXMPP):
         if event_id:
             try:
                 await self.matrix_side.room_redact(
-                    room_id='!odwJFwanVTgIblSUtg:matrix.org',  # TODO: Dynamic room mapping
+                    room_id=self.mapping_by_muc[msg['from'].bare],
                     event_id=event_id,
                     reason=f"Moderated by {by_readable} ({by_id}): {reason or '<No reason provided.>'}",
                 )
@@ -199,10 +217,10 @@ class KoishiComponent(ComponentXMPP):
                     msg['from'],
                     stanza_id,
                     "",
-                    mto="chaos@group.pain.agency",
+                    mto=msg_from.bare,
                     mbody=f"Bridge fs error during moderation: {type(e).__name__}: {e}",
                     mtype='groupchat',
-                    mfrom="koishi.pain.agency",
+                    mfrom=self.jid,
                 )
 
         # catch any fs error
@@ -214,10 +232,10 @@ class KoishiComponent(ComponentXMPP):
                     msg['from'],
                     stanza_id,
                     "",
-                    mto="chaos@group.pain.agency",
+                    mto=msg_from.bare,
                     mbody=f"Bridge fs error during moderation: {type(e).__name__}: {e}",
                     mtype='groupchat',
-                    mfrom="koishi.pain.agency",
+                    mfrom=self.jid,
                 )
 
     async def message(self, msg):
@@ -232,7 +250,7 @@ class KoishiComponent(ComponentXMPP):
         if msg_from == '':
             return
 
-        if msg.get('to') != "koishi.pain.agency":  # TODO dont hardcode
+        if msg.get('to') != self.jid:
             return
 
         match(msg.get_type()):
@@ -244,6 +262,9 @@ class KoishiComponent(ComponentXMPP):
                     return
                 self.bridged_stanzaid.add(stanzaid)
 
+                bridge_from = msg['from'].bare
+                bridge_to = self.mapping_by_muc[bridge_from]
+
                 if msg.get('id', '') in self.bridged_mx_eventid:
                     try:
                         await self.db.set_xmpp_stanzaid(stanzaid, msg.get('id', ''))
@@ -253,7 +274,10 @@ class KoishiComponent(ComponentXMPP):
                         self.bridged_mx_eventid.remove(msg.get('id', ''))
                         try:
                             await self.matrix_side.room_read_markers(
-                                "!odwJFwanVTgIblSUtg:matrix.org", msg.get('id', ''), msg.get('id', ''))
+                                bridge_to,
+                                msg.get('id', ''),
+                                msg.get('id', '')
+                            )
                         except Exception as _:
                             pass
                         finally:
@@ -308,7 +332,7 @@ class KoishiComponent(ComponentXMPP):
                     try:
                         # You must 'await' this, otherwise the message is never sent!
                         resp: RoomSendResponse = await self.matrix_side.room_send(
-                            room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                            room_id=bridge_to,
                             message_type="m.room.message",
                             content={
                                 "msgtype": "m.text",
@@ -339,11 +363,11 @@ class KoishiComponent(ComponentXMPP):
                         return
 
                     self.plugin['xep_0333'].send_marker(
-                        mto="chaos@group.pain.agency",  # TODO
+                        mto=bridge_from,
                         id=stanzaid,
                         mtype="groupchat",
                         marker="displayed",
-                        mfrom="koishi.pain.agency"  # TODO
+                        mfrom=self.jid
                     )
 
                     try:
@@ -358,10 +382,10 @@ class KoishiComponent(ComponentXMPP):
                             msg['from'],
                             stanzaid,
                             body,
-                            mto="chaos@group.pain.agency",
+                            mto=bridge_from,
                             mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
                             mtype='groupchat',
-                            mfrom="koishi.pain.agency",
+                            mfrom=self.jid,
                         )
                         return
 
@@ -376,7 +400,7 @@ class KoishiComponent(ComponentXMPP):
 
                     try:
                         resp: RoomSendResponse = await self.matrix_side.room_send(
-                            room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                            room_id=bridge_to,
                             message_type="m.room.message",
                             content={
                                 "msgtype": "m.text",
@@ -419,16 +443,16 @@ class KoishiComponent(ComponentXMPP):
                             msg['from'],
                             stanzaid,
                             body,
-                            mto="chaos@group.pain.agency",
+                            mto=bridge_from,
                             mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
                             mtype='groupchat',
-                            mfrom="koishi.pain.agency",
+                            mfrom=self.jid,
                         )
                         return
 
                     try:
                         resp: RoomSendResponse = await self.matrix_side.room_send(
-                            room_id="!odwJFwanVTgIblSUtg:matrix.org",
+                            room_id=bridge_to,
                             message_type="m.room.message",
                             content={
                                 "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
@@ -443,19 +467,19 @@ class KoishiComponent(ComponentXMPP):
                             msg['from'],
                             stanzaid,
                             body,
-                            mto="chaos@group.pain.agency",
+                            mto=bridge_from,
                             mbody=f"could not bridge message because of matrix error of type {type(e)}\n{e}",
                             mtype='groupchat',
-                            mfrom="koishi.pain.agency",
+                            mfrom=self.jid,
                         )
                         return
 
                     self.plugin['xep_0333'].send_marker(
-                        mto="chaos@group.pain.agency",  # TODO
+                        mto=bridge_from,
                         id=stanzaid,
                         mtype="groupchat",
                         marker="displayed",
-                        mfrom="koishi.pain.agency"  # TODO
+                        mfrom=self.jid
                     )
 
                     try:
@@ -465,10 +489,10 @@ class KoishiComponent(ComponentXMPP):
                             msg['from'],
                             stanzaid,
                             body,
-                            mto="chaos@group.pain.agency",
+                            mto=bridge_from,
                             mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
                             mtype='groupchat',
-                            mfrom="koishi.pain.agency",
+                            mfrom=self.jid,
                         )
                         return
 

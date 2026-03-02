@@ -5,6 +5,7 @@ Licensed as AGPL 3.0
 Distributed as-is and without warranty
 """
 # python stdlib
+import sys
 import json
 import logging
 import asyncio
@@ -13,6 +14,7 @@ import urllib
 
 # xmpp library
 from slixmpp import stanza, JID
+from slixmpp.types import PresenceArgs
 
 # temporary matrix library
 from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice, Receipt, ReceiptEvent, RedactionEvent
@@ -32,21 +34,35 @@ background_tasks = set()
 with open('login.json', 'r', encoding='utf-8') as login_file:
     login = json.load(login_file)
 
+mapping_by_room_id: dict[str, JID] = {}
+mapping_by_muc_jid: dict[JID, str] = {}
+for mapping in login['bridge-mapping']:
+    jid = JID(mapping['xmpp'])
+    if jid.resource:
+        print(
+            f"{mapping['xmpp']} is not a valid muc id, a muc id should have no resourcepart but this has \"{jid.resource}\"",
+            file=sys.stderr
+        )
+        sys.exit(66)
+    mapping_by_room_id[mapping['matrix']] = jid
+    mapping_by_muc_jid[jid] = mapping['matrix']
+
 db: KoishiDB = KoishiDB(
     conn_str=login['postgresql_conn'],
     min_connections=1,
     max_connections=3,
 )
 
-webserver: KoishiWebserver = KoishiWebserver(db, login['matrix']['domain'])
+webserver: KoishiWebserver = KoishiWebserver(
+    db, login['matrix']['domain'], login['http_domain'])
 
 # Global variables to store instances
 xmpp_side = None
 matrix_side = None
 
 # basic deduplication
-bridged_jnics: set[str] = set(("Koishi Bridge",),)  # TODO
-bridged_jids: set[str] = set(("koishi.pain.agency",),)
+bridged_jnics: set[str] = set((login['vanity_name'],),)
+bridged_jids: set[str] = set((login['xmpp']['jid'],),)
 bridged_mx_eventid: set[str] = set()
 
 # lazy
@@ -55,8 +71,6 @@ cached_matrix_nick: dict[str, str] = {}
 # dont join the same puppet many times
 is_joining: dict[str, asyncio.Event] = {}
 
-tmp_muc_id = "chaos@group.pain.agency"  # TODO
-
 
 async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
 
@@ -64,7 +78,11 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     if event.sender == login['matrix']['mxid']:
         return
 
-    jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
+    user_jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
+
+    muc_jid = mapping_by_room_id[room.room_id]
+    if not muc_jid:
+        return
 
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
@@ -72,7 +90,7 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     await xmpp_side.started.wait()
 
     new_bridged_muc_jid = util.escape_nickname(
-        "chaos@group.pain.agency",
+        muc_jid,
         room.user_name(event.sender)
     )
     new_bridged_nick = new_bridged_muc_jid.resource
@@ -89,13 +107,13 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     bridged_mx_eventid.add(event.event_id)
 
     # dont proceede if a join is in progress
-    if is_joining.get(jid) is not None:
-        await is_joining[jid].wait()
+    if is_joining.get(user_jid) is not None:
+        await is_joining[user_jid].wait()
 
     this_cached_nick = cached_matrix_nick.get(event.sender)
 
     # puppet joining logic
-    if new_bridged_nick != this_cached_nick or not jid in bridged_jids or event.body.startswith("!join"):
+    if new_bridged_nick != this_cached_nick or not user_jid in bridged_jids or event.body.startswith("!join"):
 
         if this_cached_nick:
             try:
@@ -104,18 +122,18 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
                 print("cannot remove nick from cache", e)
 
         # avoid duplicate joins
-        asyncio_event = is_joining.get(jid)
+        asyncio_event = is_joining.get(user_jid)
         if asyncio_event is None:
-            is_joining[jid] = asyncio_event = asyncio.Event()
+            is_joining[user_jid] = asyncio_event = asyncio.Event()
         else:
             asyncio_event.clear()
 
         try:
             print("joining", new_bridged_nick)
-            await xmpp_side.plugin['xep_0045'].join_muc(
-                room=tmp_muc_id,
+            await xmpp_side.plugin['xep_0045'].join_muc_wait(
+                room=muc_jid,
                 nick=new_bridged_nick,
-                pfrom=jid,
+                presence_options=PresenceArgs(pfrom=user_jid)
             )
             print("joined", new_bridged_nick)
 
@@ -147,7 +165,7 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
 
             return
 
-        bridged_jids.add(jid)
+        bridged_jids.add(user_jid)
         bridged_jnics.add(new_bridged_nick)
 
     mx_reply_to_id = event.source \
@@ -175,22 +193,22 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     if stanza_id:
 
         message: stanza.Message = xmpp_side['xep_0461'].make_reply(
-            reply_jid or "chaos@group.pain.agency/",
+            reply_jid or f"{muc_jid}/",
             stanza_id or "",
             fallback=content or "",
-            mto=tmp_muc_id,
+            mto=muc_jid,
             mbody=event.body,
             mtype='groupchat',
-            mfrom=jid,
+            mfrom=user_jid,
         )
 
     else:
 
         message: stanza.Message = xmpp_side.make_message(
-            mto=tmp_muc_id,
+            mto=muc_jid,
             mbody=event.body,
             mtype='groupchat',
-            mfrom=jid,
+            mfrom=user_jid,
 
         )
 
@@ -265,7 +283,11 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
     # hold onto events until they can be bridged
     await xmpp_side.started.wait()
 
-    jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
+    user_jid = f"{event.sender[1:].replace(':','_')}@{login['xmpp']['jid']}"
+
+    muc_jid = mapping_by_room_id[room.room_id]
+    if not muc_jid:
+        return
 
     media_id: str = str(uuid.uuid4())
     raw_mx_filename = event.source.get('content', {}).get('filename')
@@ -274,7 +296,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
     )
 
     new_bridged_muc_jid = util.escape_nickname(
-        "chaos@group.pain.agency",
+        muc_jid,
         room.user_name(event.sender)
     )
     new_bridged_nick = new_bridged_muc_jid.resource
@@ -292,24 +314,24 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
     )
 
     # dont proceede if a join is in progress
-    if is_joining.get(jid) is not None:
-        await is_joining[jid].wait()
+    if is_joining.get(user_jid) is not None:
+        await is_joining[user_jid].wait()
 
     # join puppet logic
-    if new_bridged_nick != cached_matrix_nick.get(event.sender) or not jid in bridged_jids:
+    if new_bridged_nick != cached_matrix_nick.get(event.sender) or not user_jid in bridged_jids:
 
         # avoid duplicate joins
-        asyncio_event = is_joining.get(jid)
+        asyncio_event = is_joining.get(user_jid)
         if asyncio_event is None:
-            is_joining[jid] = asyncio_event = asyncio.Event()
+            is_joining[user_jid] = asyncio_event = asyncio.Event()
         else:
             asyncio_event.clear()
 
         try:
-            await xmpp_side.plugin['xep_0045'].join_muc(
-                room=tmp_muc_id,
+            await xmpp_side.plugin['xep_0045'].join_muc_wait(
+                room=muc_jid,
                 nick=new_bridged_nick,
-                pfrom=jid,
+                presence_options=PresenceArgs(pfrom=user_jid)
             )
 
             cached_matrix_nick[event.sender] = new_bridged_nick
@@ -340,7 +362,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
             return
 
-        bridged_jids.add(jid)
+        bridged_jids.add(user_jid)
         bridged_jnics.add(new_bridged_nick)
 
     try:
@@ -398,22 +420,22 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
     if stanza_id:
 
         message: stanza.Message = xmpp_side['xep_0461'].make_reply(
-            reply_jid or "chaos@group.pain.agency/",
+            reply_jid or f"{muc_jid}/",
             stanza_id or "",
             fallback=content or "",
-            mto=tmp_muc_id,
+            mto=muc_jid,
             mbody=url if raw_mx_filename is None else f"{event.body}\n{url}",
             mtype='groupchat',
-            mfrom=jid,
+            mfrom=user_jid,
         )
 
     else:
 
         message: stanza.Message = xmpp_side.make_message(
-            mto=tmp_muc_id,
+            mto=muc_jid,
             mbody=url if raw_mx_filename is None else f"{event.body}\n{url}",
             mtype='groupchat',
-            mfrom=jid,
+            mfrom=user_jid,
 
         )
 
@@ -432,21 +454,25 @@ async def media_callback(room, event) -> None:
     task.add_done_callback(background_tasks.discard)
 
 
-async def receipt_handler(_: MatrixRoom, event: Receipt):
+async def receipt_handler(room: MatrixRoom, event: Receipt):
 
     assert xmpp_side, "xmpp_side should be defined before matrix side is connected"
 
     # hold onto events until they can be bridged
     await xmpp_side.started.wait()
 
-    jid = f"{event.user_id[1:].replace(':','_')}@{login['xmpp']['jid']}"
+    user_jid = f"{event.user_id[1:].replace(':','_')}@{login['xmpp']['jid']}"
+
+    muc_jid = mapping_by_room_id[room.room_id]
+    if not muc_jid:
+        return
 
     # dont proceede if a join is in progress
-    if is_joining.get(jid) is not None:
-        await is_joining[jid].wait()
+    if is_joining.get(user_jid) is not None:
+        await is_joining[user_jid].wait()
 
     # join puppet logic
-    if not jid in bridged_jids:
+    if not user_jid in bridged_jids:
         return
 
     stanza_id = None
@@ -459,11 +485,11 @@ async def receipt_handler(_: MatrixRoom, event: Receipt):
         return
 
     xmpp_side.plugin['xep_0333'].send_marker(
-        mto="chaos@group.pain.agency",  # TODO
+        mto=muc_jid,
         id=stanza_id,
         mtype="groupchat",
         marker="displayed",
-        mfrom=jid
+        mfrom=user_jid
     )
 
 
@@ -486,6 +512,10 @@ async def receipt_callback(room: MatrixRoom, events: ReceiptEvent):
 async def redaction_handler(room: MatrixRoom, event: RedactionEvent):
     # Skip if the redaction was sent by the bridge itself
     if event.sender == login['matrix']['mxid']:
+        return
+
+    muc_jid = mapping_by_room_id[room.room_id]
+    if not muc_jid:
         return
 
     # delete record from db so that bridged media link is broken
@@ -530,10 +560,10 @@ async def redaction_handler(room: MatrixRoom, event: RedactionEvent):
     if stanza_id:
         try:
             await xmpp_side['xep_0425'].moderate(
-                room=JID("chaos@group.pain.agency"),
+                room=muc_jid,
                 id=stanza_id,
                 reason=f"redacted by {event.sender}: {event.reason or '<No reason provided.>'}",
-                ifrom="koishi.pain.agency"
+                ifrom=xmpp_side.jid
             )
         except Exception as e:
             await matrix_side.room_send(
@@ -614,14 +644,18 @@ async def nio_main() -> None:
 
     await matrix_side.login(login['matrix']['password'])
 
-    # Join room if necessary
-    # await client.join("!odwJFwanVTgIblSUtg:matrix.org")
+    await matrix_side.sync(timeout=30000)
 
-    await matrix_side.room_send(
-        room_id="!odwJFwanVTgIblSUtg:matrix.org",  # TODO
-        message_type="m.room.message",
-        content={"msgtype": "m.text", "body": "Hello world!"},
-    )
+    # join rooms all at once
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for r in mapping_by_room_id:
+                tg.create_task(matrix_side.join(r))
+    except* ExceptionGroup as eg:
+        # pylint: disable=not-an-iterable
+        for e in eg.exceptions:
+            print(f"Task failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Sync forever acts as the "run_forever" for the Matrix side
     await matrix_side.sync_forever(timeout=30000)
@@ -632,12 +666,14 @@ async def main():
 
     # Initialize XMPP
     xmpp_side = KoishiComponent(
+        mapping_by_muc_jid,
         db,
         login['xmpp']['jid'],
         login['xmpp']['secret'],
         login['xmpp']['domain'],
-        login['http_domain'],
         login['xmpp']['port'],
+        login['vanity_name'],
+        login['http_domain'],
         bridged_jnics,
         bridged_jids,
         bridged_mx_eventid,
