@@ -36,7 +36,7 @@ Licensed under AGPLv3
 ## TODO:
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
-- bridge leaves (lowish)
+- bridge leaves from matrix to xmpp (lowish)
 - Bridge Bans (medium)
 - Bridge Reactions (difficult, requires storing in db due to different formats)
     - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
