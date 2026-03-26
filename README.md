@@ -36,18 +36,19 @@ Licensed under AGPLv3
 ## TODO:
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
-- Configurability of rooms (low-high depending)
-    - moving room bridging config to config file may be a decent stopgap
-    - Preferred to be able to configure it through the bot for public instances (perhaps not worth it)
-- Bridge Bans (Difficult)
-- Bridge Reactions (medium, requires storing in db due to different formats)
+- bridge leaves (lowish)
+- Bridge Bans (medium)
+- Bridge Reactions (difficult, requires storing in db due to different formats)
     - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
 - When bridging message deletions, ensure server support
-- Add puppeting on Matrix side (medium - high)
+- automatic voicing of puppets (medium)
+- Add puppeting on Matrix side (VERY HIGH)
     - bridge read receipts XMPP -> Matrix
     - use puppet to let matrix auth verify retractions
-- bridge formatting (mostly annoying, should be simple though, if its easier just write 2 functions to go both ways and i can hook it up)
+    - maunium-appservice is undocumented and basically abandonware, we'll have to implement the appservice api manually
+- bridge formatting (mostly annoying, no knowledge of the codebase necessary - should be simple though just write 2 functions to go both ways and i can hook it up)
 - bridge pfps (annoying, but prob not hard)
+- Configurability of rooms through the bot for public instances (high, perhaps not worth it)
 - Add IRC support (???)
 
 --- 
