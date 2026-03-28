@@ -163,6 +163,8 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
                 }
             )
 
+            return
+
         except Exception as e:
 
             asyncio_event.set()
@@ -382,6 +384,8 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
                     "body": "Timed out trying to join puppet to MUC. This is most often caused by your nickname being already in use. Please change your displayname and try again.",
                 }
             )
+
+            return
 
         except Exception as e:
 
