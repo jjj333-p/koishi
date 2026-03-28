@@ -37,6 +37,7 @@ Licensed under AGPLv3
 ## TODO:
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
+- automatically disambiguate puppets if theres duplicate nicks on matrix side
 - Automatically voice puppets on the xmpp side (idk)
 - Add puppeting on Matrix side (medium - high)
     - Bridge read receipts XMPP -> Matrix

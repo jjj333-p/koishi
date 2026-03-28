@@ -140,6 +140,29 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
             cached_matrix_nick[event.sender] = new_bridged_nick
             asyncio_event.set()
 
+        except TimeoutError as _:
+
+            asyncio_event.set()
+
+            await matrix_side.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.mentions": {
+                        "user_ids": [
+                            event.sender
+                        ]
+                    },
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event.event_id
+                        }
+                    },
+                    "body": "Timed out trying to join puppet to MUC. This is most often caused by your nickname being already in use. Please change your displayname and try again.",
+                }
+            )
+
         except Exception as e:
 
             asyncio_event.set()
@@ -336,6 +359,29 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
             cached_matrix_nick[event.sender] = new_bridged_nick
             asyncio_event.set()
+
+        except TimeoutError as _:
+
+            asyncio_event.set()
+
+            await matrix_side.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.mentions": {
+                        "user_ids": [
+                            event.sender
+                        ]
+                    },
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event.event_id
+                        }
+                    },
+                    "body": "Timed out trying to join puppet to MUC. This is most often caused by your nickname being already in use. Please change your displayname and try again.",
+                }
+            )
 
         except Exception as e:
 
