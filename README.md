@@ -26,10 +26,10 @@ Licensed under AGPLv3
         - download and re-serve matrix media to a url for XMPP
     - read receipt on matrix side to confirm delivery to XMPP
     - read receipt bridging from Matrix to XMPP
-<img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
-<img width="1091" height="521" alt="image" src="https://github.com/user-attachments/assets/ebf82ec6-6644-457f-9148-c2cac930501e" />
 - bridging of moderations/redactions
     - TODO: ensure server support
+<img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
+<img width="1091" height="521" alt="image" src="https://github.com/user-attachments/assets/ebf82ec6-6644-457f-9148-c2cac930501e" />
 <img width="1302" height="926" alt="image" src="https://github.com/user-attachments/assets/691c4b52-1af1-44a2-8b6d-fb115e088404" />
 - configuration of bridging multiple rooms (TODO: document)
 
@@ -38,17 +38,19 @@ Licensed under AGPLv3
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
 - automatically disambiguate puppets if theres duplicate nicks on matrix side
-- Automatically voice puppets on the xmpp side (idk)
-- Add puppeting on Matrix side (medium - high)
-    - Bridge read receipts XMPP -> Matrix
-    - Use puppet to let matrix auth verify retractions
-- Bridge Bans (Difficult)
-- Bridge Reactions (medium, requires storing in db due to different formats)
+- bridge leaves from matrix to xmpp (lowish)
+- Bridge Bans (medium)
+- Bridge Reactions (difficult, requires storing in db due to different formats)
     - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
 - When bridging message deletions, ensure server support
-- Bridge formatting (mostly annoying, should be simple though, if its easier just write 2 functions to go both ways and i can hook it up)
-- Bridge pfps (annoying, but prob not hard)
-- Allow configuring bridging through the bot instead of the config file
+- automatic voicing of puppets (medium)
+- Add puppeting on Matrix side (VERY HIGH)
+    - bridge read receipts XMPP -> Matrix
+    - use puppet to let matrix auth verify retractions
+    - maunium-appservice is undocumented and basically abandonware, we'll have to implement the appservice api manually
+- bridge formatting (mostly annoying, no knowledge of the codebase necessary - should be simple though just write 2 functions to go both ways and i can hook it up)
+- bridge pfps (annoying, but prob not hard)
+- Configurability of rooms through the bot for public instances (high, perhaps not worth it)
 - Add IRC support (???)
 
 --- 
