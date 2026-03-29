@@ -11,6 +11,7 @@ import mimetypes
 import uuid
 import secrets
 import aiofiles
+from urllib.parse import quote
 
 # make fetching shit work
 import httpx
@@ -254,7 +255,7 @@ class KoishiWebserver:
 
                     # inline vs attachment:
                     # 'inline' attempts to display in browser; 'attachment' forces download.
-                    "Content-Disposition": f'inline; filename="{file_name}"',
+                    "Content-Disposition": f'inline; filename="{quote(file_name)}"',
 
                     # Security: Prevents the browser from "sniffing" the MIME type
                     'X-Content-Type-Options': 'nosniff',
