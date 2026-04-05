@@ -444,8 +444,10 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     bridged_mx_eventid.add(event.event_id)
 
+    # format of https url to send to xmpp side
     url: str = f"https://{login['http_domain']}/matrix-proxy/{media_id}/{filename}"
 
+    # get if the matrix side replied to something
     mx_reply_to_id = event.source \
         .get('content', {}) \
         .get("m.relates_to", {}) \
@@ -456,18 +458,22 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
     stanza_id = None
     reply_jid = None
     content = None
+
+    # check the db if that id matches up to anything, only if theres an id to check
     if mx_reply_to_id:
         try:
             result = await db.get_xmpp_reply_data(mx_reply_to_id)
         except Exception as e:
             print(e)
 
+    # if we got something from the db, unpack
     if result:
         if len(result) > 2:
             stanza_id, reply_jid, content, *_ = result
         else:
             stanza_id = result[0]
 
+    # if theres an id to reply to for the xmpp side
     if stanza_id:
 
         message: stanza.Message = xmpp_side['xep_0461'].make_reply(
@@ -480,8 +486,10 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
             mfrom=user_jid,
         )
 
+    # we cant reply to anything, form a message normally
     else:
 
+        # if it doesnt qualify for the caption display spec dont bridge it
         if raw_mx_filename is None or raw_mx_filename == event.body:
             message: stanza.Message = xmpp_side.make_message(
                 mto=muc_jid,
@@ -491,6 +499,8 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
             )
 
         else:
+
+            # create base message
             message: stanza.Message = xmpp_side.make_message(
                 mto=muc_jid,
                 mbody=f"{event.body}\n{url}",
