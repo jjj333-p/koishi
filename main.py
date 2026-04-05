@@ -14,6 +14,7 @@ import urllib
 
 # xmpp library
 from slixmpp import stanza, JID
+from slixmpp.plugins.xep_0428.stanza import Fallback
 from slixmpp.types import PresenceArgs
 
 # temporary matrix library
@@ -481,13 +482,36 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
 
     else:
 
-        message: stanza.Message = xmpp_side.make_message(
-            mto=muc_jid,
-            mbody=url if raw_mx_filename is None else f"{event.body}\n{url}",
-            mtype='groupchat',
-            mfrom=user_jid,
+        if raw_mx_filename is None or raw_mx_filename == event.body:
+            message: stanza.Message = xmpp_side.make_message(
+                mto=muc_jid,
+                mbody=url,
+                mtype='groupchat',
+                mfrom=user_jid,
+            )
 
-        )
+        else:
+            message: stanza.Message = xmpp_side.make_message(
+                mto=muc_jid,
+                mbody=f"{event.body}\n{url}",
+                mtype='groupchat',
+                mfrom=user_jid,
+            )
+
+            # create fallback for the oob element
+            fallback = Fallback()
+            fallback['for'] = "jabber:x:oob"
+
+            # get start offset, +1 for the \n
+            start = len(event.body) + 1
+
+            # add the range
+            # pylint: disable=invalid-sequence-index
+            fallback["body"]["start"] = start
+            # pylint: disable=invalid-sequence-index
+            fallback["body"]["end"] = start + len(url)
+
+            message.append(fallback)
 
     message.set_id(event.event_id)
 
