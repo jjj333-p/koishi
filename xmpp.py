@@ -19,6 +19,9 @@ from slixmpp.types import PresenceArgs
 # matrix library
 from nio import RoomSendResponse
 
+# import a psycopg error
+from psycopg.errors import UniqueViolation
+
 # for the typehint of the custom db class
 from db import KoishiDB
 
@@ -402,6 +405,10 @@ class KoishiComponent(ComponentXMPP):
                     stanzaid, url, file_id,
                     body, msg['from']
                 ),
+
+            # using errors to prevent duplicate message
+            except UniqueViolation as _:
+                return
 
             except Exception as e:
                 self['xep_0461'].make_reply(
