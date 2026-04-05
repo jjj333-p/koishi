@@ -24,6 +24,8 @@ from db import KoishiDB
 
 import util
 
+REMOVE_FOR = {"urn:xmpp:reply:0", "jabber:x:oob"}
+
 
 class KoishiComponent(ComponentXMPP):
     def __init__(
@@ -187,7 +189,7 @@ class KoishiComponent(ComponentXMPP):
                 mbody=f"Bridge DB error during moderation: {type(e).__name__}: {e}",
                 mtype='groupchat',
                 mfrom=self.jid,
-            )
+            ).send()
             return
 
         if not result:
@@ -221,7 +223,7 @@ class KoishiComponent(ComponentXMPP):
                     mbody=f"Bridge fs error during moderation: {type(e).__name__}: {e}",
                     mtype='groupchat',
                     mfrom=self.jid,
-                )
+                ).send()
 
         # catch any fs error
         if del_task:
@@ -236,7 +238,7 @@ class KoishiComponent(ComponentXMPP):
                     mbody=f"Bridge fs error during moderation: {type(e).__name__}: {e}",
                     mtype='groupchat',
                     mfrom=self.jid,
-                )
+                ).send()
 
     async def groupchat_message(self, msg):
         # TODO figure out how to hold until it comes online, a la mutex or js promise
@@ -302,27 +304,25 @@ class KoishiComponent(ComponentXMPP):
             else:
                 matrix_replyto_id = result[0]
 
-        fallback_range = msg['fallback']['body']
-        b = msg.get('body', 'No body found !?')
-        if fallback_range == '':
-            body = b
-        else:
-            # get start and end of the fallback
-            start = int(fallback_range.get('start', 0))
-            end = int(fallback_range.get('end', 0))
+        # get out fallback ranges for features we support
+        ranges_to_remove = []
+        for fallback in msg['fallbacks']:
+            if fallback["for"] in REMOVE_FOR:
+                start = int(fallback["body"]["start"])
+                end = int(fallback["body"]["end"])
+                ranges_to_remove.append((start, end))
 
-            # sanity check ranges
-            if end <= start or not start < len(b) or not end < len(b):
-                body = b
-            else:
-                # cut around range
-                if start > 0:
-                    part1 = b[:start]
-                else:
-                    part1 = ''
-                part2 = b[end:]
+        # Remove in reverse order so indices stay valid
+        ranges_to_remove.sort(reverse=True)
+        result = list(msg['body'])
+        for start, end in ranges_to_remove:
+            if end > len(result):
+                continue
+            if start < 0:
+                continue
+            del result[start:end]
 
-                body = part1 + part2
+        body = "".join(result).strip()
 
         url: str | None = msg.get('oob', {}).get('url')
         if not url:
@@ -383,7 +383,7 @@ class KoishiComponent(ComponentXMPP):
                     mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
                     mtype='groupchat',
                     mfrom=self.jid,
-                )
+                ).send()
                 return
 
         else:
@@ -395,14 +395,39 @@ class KoishiComponent(ComponentXMPP):
                 mime_type = "application/octet-stream"
             main_type, _ = mime_type.split('/')
 
+            file_id = str(uuid.uuid4())
+
+            try:
+                await self.db.insert_xmpp_media_message_mapping(
+                    stanzaid, url, file_id,
+                    body, msg['from']
+                ),
+
+            except Exception as e:
+                self['xep_0461'].make_reply(
+                    msg['from'],
+                    stanzaid,
+                    body,
+                    mto=bridge_from,
+                    mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
+                    mtype='groupchat',
+                    mfrom=self.jid,
+                ).send()
+                return
+
+            caption = f"\n{body}" if body != url else ""
+
             try:
                 resp: RoomSendResponse = await self.matrix_side.room_send(
                     room_id=bridge_to,
                     message_type="m.room.message",
                     content={
-                        "msgtype": "m.text",
-                        "body": f"{msg['from'].resource} sent a(n) {mime_type}",
-                        # TODO: properly parse out mentions based on bridged displayname
+                        "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
+                        "body": f"{msg['from'].resource} sent a(n) {mime_type}{caption}",
+                        "url": f"mxc://{self.http_domain}/{file_id}",
+                        "info": {"mimetype": mime_type},
+                        "filename": filename,
+                        "external_url": url,
                         ** (
                             {
                                 "m.mentions": {
@@ -424,42 +449,6 @@ class KoishiComponent(ComponentXMPP):
                     },
                 )
             except Exception as e:
-                print(e)
-                return
-
-            file_id = str(uuid.uuid4())
-
-            try:
-                await self.db.insert_xmpp_media_message_mapping(
-                    stanzaid, url, file_id,
-                    body, msg['from']
-                ),
-
-            except Exception as e:
-                self['xep_0461'].make_reply(
-                    msg['from'],
-                    stanzaid,
-                    body,
-                    mto=bridge_from,
-                    mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
-                    mtype='groupchat',
-                    mfrom=self.jid,
-                )
-                return
-
-            try:
-                resp: RoomSendResponse = await self.matrix_side.room_send(
-                    room_id=bridge_to,
-                    message_type="m.room.message",
-                    content={
-                        "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
-                        "body": body,
-                        "url": f"mxc://{self.http_domain}/{file_id}",
-                        "info": {"mimetype": mime_type},
-                        "filename:": filename
-                    },
-                )
-            except Exception as e:
                 self['xep_0461'].make_reply(
                     msg['from'],
                     stanzaid,
@@ -468,7 +457,7 @@ class KoishiComponent(ComponentXMPP):
                     mbody=f"could not bridge message because of matrix error of type {type(e)}\n{e}",
                     mtype='groupchat',
                     mfrom=self.jid,
-                )
+                ).send()
                 return
 
             self.plugin['xep_0333'].send_marker(
@@ -490,7 +479,7 @@ class KoishiComponent(ComponentXMPP):
                     mbody=f"could not bridge message because of database error of type {type(e)}\n{e}",
                     mtype='groupchat',
                     mfrom=self.jid,
-                )
+                ).send()
                 return
 
         print(resp)
