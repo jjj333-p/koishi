@@ -317,6 +317,7 @@ class KoishiDB:
                 )
 
                 # Return the metadata
+                # TODO: tuple may be more efficient 🤔
                 return {
                     "stanza_id": row[0],
                     "event_id": row[1],

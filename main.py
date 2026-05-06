@@ -96,10 +96,12 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
     )
     new_bridged_nick = new_bridged_muc_jid.resource
 
+    sanitized_body = util.illegal_xml_chars_regex.sub('', event.body)
+
     create_row_task: asyncio.Task = asyncio.create_task(
         db.insert_msg_from_mtrx(
             event.event_id,
-            event.body,
+            sanitized_body,
             new_bridged_muc_jid,
             event.sender
         )
@@ -223,7 +225,7 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
             stanza_id or "",
             fallback=content or "",
             mto=muc_jid,
-            mbody=event.body,
+            mbody=sanitized_body,
             mtype='groupchat',
             mfrom=user_jid,
         )
@@ -232,7 +234,7 @@ async def message_handler(room: MatrixRoom, event: RoomMessageText) -> None:
 
         message: stanza.Message = xmpp_side.make_message(
             mto=muc_jid,
-            mbody=event.body,
+            mbody=sanitized_body,
             mtype='groupchat',
             mfrom=user_jid,
 
@@ -315,10 +317,12 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
     if not muc_jid:
         return
 
+    sanitized_body = util.illegal_xml_chars_regex.sub('', event.body)
+
     media_id: str = str(uuid.uuid4())
     raw_mx_filename = event.source.get('content', {}).get('filename')
     filename: str = urllib.parse.quote_plus(
-        (raw_mx_filename or event.body).split('/')[-1]
+        (raw_mx_filename or sanitized_body).split('/')[-1]
     )
 
     new_bridged_muc_jid = util.escape_nickname(
@@ -332,7 +336,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
             event.event_id,
             event.url,
             media_id,
-            event.body,
+            sanitized_body,
             filename,
             new_bridged_muc_jid,
             event.sender
@@ -481,7 +485,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
             stanza_id or "",
             fallback=content or "",
             mto=muc_jid,
-            mbody=url if raw_mx_filename is None else f"{event.body}\n{url}",
+            mbody=url if raw_mx_filename is None else f"{sanitized_body}\n{url}",
             mtype='groupchat',
             mfrom=user_jid,
         )
@@ -503,7 +507,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
             # create base message
             message: stanza.Message = xmpp_side.make_message(
                 mto=muc_jid,
-                mbody=f"{event.body}\n{url}",
+                mbody=f"{sanitized_body}\n{url}",
                 mtype='groupchat',
                 mfrom=user_jid,
             )
@@ -513,7 +517,7 @@ async def media_handler(room: MatrixRoom, event: RoomMessageMedia) -> None:
             fallback['for'] = "jabber:x:oob"
 
             # get start offset, +1 for the \n
-            start = len(event.body) + 1
+            start = len(sanitized_body) + 1
 
             # add the range
             # pylint: disable=invalid-sequence-index
@@ -642,11 +646,17 @@ async def redaction_handler(room: MatrixRoom, event: RedactionEvent):
 
     # XMPP Moderation (XEP-0425)
     if stanza_id:
+
+        if event.reason:
+            mx_reason = util.illegal_xml_chars_regex.sub('', event.reason)
+        else:
+            mx_reason = '<No reason provided.>'
+
         try:
             await xmpp_side['xep_0425'].moderate(
                 room=muc_jid,
                 id=stanza_id,
-                reason=f"redacted by {event.sender}: {event.reason or '<No reason provided.>'}",
+                reason=f"redacted by {event.sender}: {mx_reason}",
                 ifrom=xmpp_side.jid
             )
         except Exception as e:
