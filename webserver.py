@@ -226,7 +226,7 @@ class KoishiWebserver:
                         }
                     )
                 except Exception as e:
-                    e_str = f"Failed to fullfill get request for id {media_id} ({mxc}) due to unknown upstream error \n {e}"
+                    e_str = f"Failed to fullfill get request for id {media_id} ({mxc}) due to unknown error \n {e}"
                     print(e_str)
                     return JSONResponse(
                         status_code=500,
@@ -288,7 +288,7 @@ class KoishiWebserver:
 
         async with self.http_fetch_client.stream("GET", upstream_url, headers=headers) as response:
             response.raise_for_status()
-            _ = int(response.headers["content-length"])
+            # _ = int(response.headers["content-length"])
             async with aiofiles.open(filepath, "wb") as f:
                 async for chunk in response.aiter_bytes(chunk_size=8192):
                     downloaded_bytes += len(chunk)
