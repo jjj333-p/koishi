@@ -226,7 +226,7 @@ class KoishiWebserver:
                         }
                     )
                 except Exception as e:
-                    e_str = str(e.with_traceback(None))
+                    e_str = f"Failed to fullfill get request for id {media_id} ({mxc}) due to unknown upstream error \n {e}"
                     print(e_str)
                     return JSONResponse(
                         status_code=500,
