@@ -8,6 +8,7 @@ Distributed as-is and without warranty
 import os
 import string
 import re
+from typing import Iterable
 from slixmpp import JID, InvalidJID
 
 illegal_xml_chars_regex = re.compile(
@@ -51,3 +52,24 @@ def rm_file(filepath: str):
     if os.path.exists(filepath):
         os.remove(filepath)
         print(f"Deleted cached media: {filepath}")
+
+
+def remove_fallbacks(body: str, namespaces: Iterable[str], fallbacks: Iterable[str]) -> str:
+    # get out fallback ranges for features we support
+    ranges_to_remove = []
+    for fallback in fallbacks:
+        if fallback["for"] in namespaces:
+            start = int(fallback["body"]["start"])
+            end = int(fallback["body"]["end"])
+            ranges_to_remove.append((start, end))
+    # Remove in reverse order so indices stay valid
+    ranges_to_remove.sort(reverse=True)
+    result = list(body)
+    for start, end in ranges_to_remove:
+        if end > len(result):
+            continue
+        if start < 0:
+            continue
+        del result[start:end]
+
+    return "".join(result).strip()
