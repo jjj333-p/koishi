@@ -8,7 +8,7 @@ Distributed as-is and without warranty
 import os
 import string
 import re
-from typing import Iterable
+from collections.abc import Iterable
 from slixmpp import JID, InvalidJID
 
 illegal_xml_chars_regex = re.compile(
