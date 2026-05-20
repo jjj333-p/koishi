@@ -28,10 +28,10 @@ Licensed under AGPLv3
     - read receipt bridging from Matrix to XMPP
 - bridging of moderations/redactions
     - TODO: ensure server support
+- configuration of bridging multiple rooms (TODO: document)
 <img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
 <img width="1091" height="521" alt="image" src="https://github.com/user-attachments/assets/ebf82ec6-6644-457f-9148-c2cac930501e" />
 <img width="1302" height="926" alt="image" src="https://github.com/user-attachments/assets/691c4b52-1af1-44a2-8b6d-fb115e088404" />
-- configuration of bridging multiple rooms (TODO: document)
 
  
 ## TODO:
