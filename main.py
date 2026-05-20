@@ -89,14 +89,7 @@ async def main():
     # Connect to database
     await db.connect()
 
-    # Start XMPP component (async task)
-    xmpp_task = asyncio.create_task(xmpp_side.connect())
-    
-    # Start Matrix client (async task)
-    matrix_task = asyncio.create_task(matrix_side.connect_and_sync())
-
-    # Connect rooms (register event handlers and join rooms on both sides)
-    # This needs to happen after both clients start connecting
+    # Connect rooms (register event handlers, will join after clients connect)
     async def connect_rooms():
         try:
             for r in rooms:
@@ -104,17 +97,19 @@ async def main():
         except Exception as e:
             print(f"Failed to connect rooms: {e}")
             raise
-    
-    room_connect_task = asyncio.create_task(connect_rooms())
 
     # Run all services
     try:
+        # Start everything concurrently
         await asyncio.gather(
-            xmpp_task,
-            matrix_task,
-            room_connect_task,
+            xmpp_side.connect(),
+            matrix_side.connect_and_sync(),
+            connect_rooms(),
             webserver.serve(port=4567, log_level="info"),
         )
+    except Exception as e:
+        print(f"Error in main: {e}")
+        raise
     except asyncio.CancelledError:
         print("Tasks cancelled, shutting down...")
     finally:
