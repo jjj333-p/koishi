@@ -141,3 +141,10 @@ class KoishiMatrixClient:
             return user_id
         room = self.client.rooms[room_id]
         return room.user_name(user_id)
+
+    @property
+    def access_token(self) -> Optional[str]:
+        """Get the access token from the nio client"""
+        if not self.client:
+            return None
+        return self.client.access_token
