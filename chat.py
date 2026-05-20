@@ -336,7 +336,7 @@ class KoishiRoom:
                         message_type="m.room.message",
                         content={
                             "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
-                            "body": f"{msg['from'].resource} sent a(n) {mime_type}{caption}",
+                            "body": f"{msg['from'].resource}: sent a(n) {mime_type}{caption}",
                             "url": f"mxc://{self.http_domain}/{file_id}",
                             "info": {"mimetype": mime_type},
                             "filename": filename,
