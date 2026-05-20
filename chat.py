@@ -1,0 +1,930 @@
+"""
+Koishi Bridge software
+Copyright 2026 Joseph Winkie <jjj333.p.1325@gmail.com>
+Licensed as AGPL 3.0
+Distributed as-is and without warranty
+"""
+import asyncio
+import uuid
+import urllib
+
+# matrix library
+from nio import MatrixRoom, RoomMessageText, RoomMessageMedia, Receipt, RedactionEvent
+# import a psycopg error
+from slixmpp import stanza, JID
+from slixmpp.types import PresenceArgs
+from slixmpp.plugins.xep_0428.stanza import Fallback
+from psycopg.errors import UniqueViolation
+
+# koishi objects
+from xmpp import KoishiComponent
+from db import KoishiDB
+import util
+
+# TODO: copy over control character sanitization
+
+
+class KoishiRoom:
+    def __init__(self, http_domain: str, mappingJSON: dict[str, str], db: KoishiDB, xmpp_side: KoishiComponent, matrix_side,):
+
+        self.muc_jid_str: str = mappingJSON.get("xmpp")
+        self.muc_jid: JID = JID(self.muc_jid_str)
+
+        self.http_domain = http_domain
+
+        if db is None:
+            raise ValueError("DB must not be None")
+        self.db = db
+
+        if xmpp_side is None:
+            raise ValueError("xmpp_side must not be None")
+
+        self.xmpp = xmpp_side
+
+        self.mx_rid = mappingJSON.get("matrix")
+        self.matrix = matrix_side
+
+        self.xmpp_queue_lock = asyncio.Lock()
+        self.matrix_queue_lock = asyncio.Lock()
+
+        self.bridged_stanzaid: set[str] = set()
+        self.bridged_mx_eventid: set[str] = set()
+
+        self.bridged_jnics: set[str] = set()
+        self.bridged_jids: set[str] = set()
+        self.bridged_mx_eventid: set[str] = set()
+        self.cached_bridged_jnics: dict[str, str] = {}
+
+    def connect_matrix(self, matrix_side):
+        pass
+
+    async def connect(self):
+        """Connect room event handlers and join both MUC and Matrix room"""
+        
+        # Register XMPP event handlers
+        async def _handle_xmpp_message(msg):
+            await self.handle_xmpp_message(msg)
+
+        async def _handle_xmpp_message_error(msg):
+            await self.handle_xmpp_message_error(msg)
+
+        async def _handle_xmpp_moderation(msg):
+            await self.handle_xmpp_moderation(msg)
+
+        self.xmpp.add_event_handler(
+            f"muc::{self.muc_jid_str}::message", _handle_xmpp_message)
+        
+        self.xmpp.add_event_handler(
+            f"muc::{self.muc_jid_str}::message_error", _handle_xmpp_message_error)
+        
+        self.xmpp.add_event_handler(
+            f"muc::{self.muc_jid_str}::moderated_message", _handle_xmpp_moderation)
+        
+        # Wait for XMPP component to be ready
+        await self.xmpp.started.wait()
+        
+        # Join the MUC as the bridge component
+        print(f"Joining XMPP MUC: {self.muc_jid_str} as {self.xmpp.display_name}")
+        try:
+            await self.xmpp.plugin['xep_0045'].join_muc_wait(
+                room=self.muc_jid,
+                nick=self.xmpp.display_name,
+                presence_options=PresenceArgs(pfrom=self.xmpp.jid),
+                timeout=30
+            )
+            print(f"Successfully joined XMPP MUC: {self.muc_jid_str}")
+        except Exception as e:
+            print(f"Failed to join XMPP MUC {self.muc_jid_str}: {e}")
+            raise
+        
+        # Wait for Matrix client to be ready
+        await self.matrix.connected.wait()
+        
+        # Join the Matrix room
+        print(f"Joining Matrix room: {self.mx_rid}")
+        try:
+            await self.matrix.join(self.mx_rid)
+            print(f"Successfully joined Matrix room: {self.mx_rid}")
+        except Exception as e:
+            print(f"Failed to join Matrix room {self.mx_rid}: {e}")
+            raise
+
+    async def handle_xmpp_message_error(self, msg):
+        if self.matrix is None:
+            raise RuntimeError("Matrix side not initialized")
+
+        import xml.etree.ElementTree as ET
+        
+        ET.indent(msg.xml, space="  ")
+        
+        try:
+            await self.matrix.room_send(
+                room_id=self.mx_rid,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": msg['id'],
+                        },
+                    },
+                    "body": str(msg)
+                },
+            )
+        except Exception as e:
+            print(f"Could not send error message to Matrix: {type(e).__name__}: {e}")
+
+    async def handle_xmpp_message(self, msg):
+
+        if self.matrix is None:
+            raise RuntimeError("Matrix side not initialized")
+
+        msg_from = msg.get('from', '')
+        if msg_from == '':
+            return
+
+        if msg.get('to') != self.xmpp.jid:
+            return
+
+        stanza_id = msg.get('stanza_id', {}).get('id')
+
+        # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
+        if stanza_id is None:
+            return
+
+        if msg.get('id', '') in self.bridged_mx_eventid:
+            try:
+                await self.db.set_xmpp_stanzaid(stanza_id, msg.get('id', ''))
+            except Exception as e:
+                print(e)
+            finally:
+                self.bridged_mx_eventid.remove(msg.get('id', ''))
+                try:
+                    await self.matrix.room_read_markers(
+                        self.mx_rid,
+                        msg.get('id', ''),
+                        msg.get('id', '')
+                    )
+                except Exception as e:
+                    print(e)
+
+            # if its in the map can short circut regardless of the return
+            return
+
+        # closure for consistent error handling
+        def send_error(error_str: str, fallback_txt: str = '') -> None:
+            self.xmpp['xep_0461'].make_reply(
+                msg_from,
+                stanza_id,
+                fallback_txt,
+                mto=msg_from.bare,
+                mbody=error_str,
+                mtype='groupchat',
+                mfrom=self.xmpp.jid,
+            ).send()
+
+        async with self.xmpp_queue_lock:
+            # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
+            if stanza_id in self.bridged_stanzaid:
+                return
+            self.bridged_stanzaid.add(stanza_id)
+
+            # ignore all puppets
+            # TODO clean this up
+            if msg_from.resource in self.bridged_jnics or msg_from.bare in self.bridged_jids:
+                return
+
+            # get reply mapping from db
+            xmpp_replyto_id = msg.get('reply', {}).get('id')
+            matrix_replyto_id = None
+            replyto_mxid = None
+            result = None
+            if xmpp_replyto_id:
+                try:
+                    result = await self.db.get_matrix_reply_data(xmpp_replyto_id)
+                except Exception as e:
+                    print(e)
+            if result:
+                if len(result) > 1:
+                    matrix_replyto_id, replyto_mxid, *_ = result
+                else:
+                    matrix_replyto_id = result[0]
+
+            # get attachment url
+            attachment_url: str | None = msg.get('oob', {}).get('url')
+
+            # fallbacks for found and supported features
+            REMOVE_FOR = []
+            if matrix_replyto_id:
+                REMOVE_FOR.append("urn:xmpp:reply:0")
+            if attachment_url:
+                REMOVE_FOR.append("jabber:x:oob")
+
+            body = util.remove_fallbacks(
+                msg['body'],
+                REMOVE_FOR,
+                msg['fallbacks']
+            )
+
+            # wait for connection
+            await self.matrix.connected.Wait()
+
+            if not attachment_url:
+                try:
+                    # You must 'await' this, otherwise the message is never sent!
+                    resp: RoomSendResponse = await self.matrix.room_send(
+                        room_id=self.mx_rid,
+                        message_type="m.room.message",
+                        content={
+                            "msgtype": "m.text",
+                            "body": f"{msg['from'].resource}:\n{body}",
+                            # TODO: properly parse out mentions based on bridged displayname
+                            ** (
+                                {
+                                    "m.mentions": {
+                                        "user_ids": [
+                                            replyto_mxid
+                                        ],
+                                    },
+                                } if replyto_mxid else {}
+                            ),
+                            ** (
+                                {
+                                    "m.relates_to": {
+                                        "m.in_reply_to": {
+                                            "event_id": matrix_replyto_id
+                                        },
+                                    },
+                                } if matrix_replyto_id else {}
+                            ),
+                        }
+                    )
+                except Exception as e:
+                    await send_error(
+                        f"Could not bridge message because of Matrix error of type {type(e)}\n{e}",
+                        body
+                    )
+                    return
+
+                self.xmpp['xep_0333'].send_marker(
+                    mto=self.muc_jid_str,
+                    id=stanza_id,
+                    mtype="groupchat",
+                    marker="displayed",
+                    mfrom=self.xmpp.jid
+                )
+
+                try:
+                    await self.db.insert_message_mapping(
+                        stanza_id,
+                        resp.event_id,
+                        body,
+                        str(msg['from'])
+                    )
+                except Exception as e:
+                    await send_error(
+                        f"could not bridge message because of database error of type {type(e)}\n{e}",
+                        body
+                    )
+                    return
+
+            else:
+
+                # xmpp clients just get this information from the url so we have to add it
+                filename: str = attachment_url.split('/')[-1]
+                mime_type, _ = mimetypes.guess_type(filename)
+                if mime_type is None:
+                    mime_type = "application/octet-stream"
+                main_type, _ = mime_type.split('/')
+
+                file_id = str(uuid.uuid4())
+
+                try:
+                    await self.db.insert_xmpp_media_message_mapping(
+                        stanza_id, attachment_url, file_id,
+                        body, msg['from']
+                    )
+
+                # using errors to prevent duplicate message
+                except UniqueViolation as _:
+                    return
+
+                except Exception as e:
+                    await send_error(
+                        f"could not bridge message because of database error of type {type(e)}\n{e}",
+                        body
+                    )
+                    return
+
+                caption = f"\n{body}" if body != attachment_url else ""
+
+                try:
+                    resp: RoomSendResponse = await self.matrix.room_send(
+                        room_id=self.mx_rid,
+                        message_type="m.room.message",
+                        content={
+                            "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
+                            "body": f"{msg['from'].resource} sent a(n) {mime_type}{caption}",
+                            "url": f"mxc://{self.http_domain}/{file_id}",
+                            "info": {"mimetype": mime_type},
+                            "filename": filename,
+                            "external_url": attachment_url,
+                            ** (
+                                {
+                                    "m.mentions": {
+                                        "user_ids": [
+                                            replyto_mxid,
+                                        ],
+                                    },
+                                } if replyto_mxid else {}
+                            ),
+                            ** (
+                                {
+                                    "m.relates_to": {
+                                        "m.in_reply_to": {
+                                            "event_id": matrix_replyto_id
+                                        },
+                                    },
+                                } if matrix_replyto_id else {}
+                            ),
+                        },
+                    )
+                except Exception as e:
+                    await send_error(
+                        f"Could not bridge message because of Matrix error of type {type(e)}\n{e}",
+                        body
+                    )
+                    return
+
+                self.xmpp['xep_0333'].send_marker(
+                    mto=self.muc_jid_str,
+                    id=stanza_id,
+                    mtype="groupchat",
+                    marker="displayed",
+                    mfrom=self.xmpp.jid
+                )
+
+                try:
+                    await self.db.set_mtrx_eventid(resp.event_id, stanza_id)
+                except Exception as e:
+                    await send_error(
+                        f"could not bridge message because of database error of type {type(e)}\n{e}",
+                        body
+                    )
+                    return
+
+    async def handle_xmpp_moderation(self, msg):
+        if self.matrix is None:
+            raise RuntimeError("Matrix side not initialized")
+
+        msg_from = msg.get('from', '')
+        if msg_from == '':
+            return
+
+        if msg.get('to') != self.xmpp.jid:
+            return
+
+        # TODO check for server support and ignore if none
+
+        retract = msg.get('retract', {})
+
+        moderated = retract.get('moderated')
+        if not moderated:
+            return
+
+        stanza_id = retract.get('id')
+        if not stanza_id:
+            return
+
+        by_readable = retract['by']  # TODO if none, look up occupant id
+        by_id = moderated.get('occupant-id', {}).get('id', 'unknown')
+        reason = retract['reason']
+
+        # closure for consistent error handling
+        def send_error(error_str: str, fallback_txt: str = '') -> None:
+            self.xmpp['xep_0461'].make_reply(
+                msg_from,
+                stanza_id,
+                fallback_txt,
+                mto=msg_from.bare,
+                mbody=error_str,
+                mtype='groupchat',
+                mfrom=self.xmpp.jid,
+            ).send()
+
+        async with self.xmpp_queue_lock:
+            # delete record in db
+            result = None
+            try:
+                # We search by stanza_id here because the moderation came from XMPP
+                result = await self.db.delete_media(stanza_id=stanza_id)
+            except Exception as e:
+                # If the DB fails, we still try to inform XMPP that bridging failed
+                await send_error(
+                    f"Bridge DB error during moderation: {type(e).__name__}: {e}")
+                return
+
+            if not result:
+                # Message wasn't in our DB, might have already been deleted or never bridged
+                # we in theory with the lock shouldnt recieve the moderation before a message
+                return
+
+            event_id = result.get('event_id')
+            cached_path = result.get('path')
+
+            # Cleanup local files if this was a media message
+            del_task = None
+            if cached_path:
+                del_task = asyncio.create_task(
+                    asyncio.to_thread(util.rm_file, cached_path))
+
+            # wait for connection
+            await self.matrix.connected.Wait()
+
+            # Perform Matrix Redaction
+            if event_id:
+                try:
+                    await self.matrix.room_redact(
+                        room_id=self.mx_rid,
+                        event_id=event_id,
+                        reason=f"Moderated by {by_readable or '<unknown>'} ({by_id}): {reason or '<No reason provided.>'}",
+                    )
+                except Exception as e:
+                    # Log error or notify XMPP that redaction failed
+                    await send_error(
+                        f"Matrix error during moderation: {type(e).__name__}: {e}"
+                    )
+
+            # catch any fs error
+            if del_task:
+                try:
+                    await del_task
+                except Exception as e:
+                    await send_error(
+                        f"Bridge fs error during moderation: {type(e).__name__}: {e}"
+                    )
+
+    async def join_xmpp_puppet_for_matrix(self, room: MatrixRoom, mxid: str, jid: str, nick: str, join_anyways: bool):
+        cached_nick = self.cached_bridged_jnics.get(mxid)
+
+        if join_anyways or nick != cached_nick or not jid in self.bridged_jids:
+
+            if cached_nick:
+                try:
+                    self.bridged_jnics.remove(cached_nick)
+                except Exception as e:
+                    print("cannot remove nick from cache", e)
+
+            print("joining", nick)
+            await self.xmpp.plugin['xep_0045'].join_muc_wait(
+                room=self.muc_jid,
+                nick=nick,
+                presence_options=PresenceArgs(pfrom=jid),
+                timeout=15
+            )
+            print("joined", nick)
+
+            self.cached_bridged_jnics[mxid] = nick
+            self.bridged_jnics.add(nick)
+            self.bridged_jids.add(jid)
+
+    async def handle_matrix_text_message(self, room: MatrixRoom, event: RoomMessageText):
+
+        if not self.matrix:
+            raise RuntimeError("Matrix not yet initialized")
+        if not self.xmpp:
+            raise RuntimeError("XMPP not yet initialized")
+
+        # temporary until appservice is used
+        if event.sender == self.matrix.mxid:
+            return
+
+        user_jid = f"{event.sender[1:].replace(':','_')}@{self.xmpp.jid}"
+
+        new_bridged_muc_jid = util.escape_nickname(
+            self.muc_jid_str,
+            room.user_name(event.sender)
+        )
+        new_bridged_nick = new_bridged_muc_jid.resource
+
+        sanitized_body = util.illegal_xml_chars_regex.sub('', event.body)
+
+        async def send_error(error_str: str):
+            await self.matrix.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.mentions": {
+                        "user_ids": [
+                            event.sender
+                        ]
+                    },
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event.event_id
+                        }
+                    },
+                    "body": error_str,
+                }
+            )
+
+        async with self.matrix_queue_lock:
+            # hold onto events until they can be bridged
+            await self.xmpp.started.wait()
+
+            try:
+                await self.join_xmpp_puppet_for_matrix(
+                    room, event.sender, user_jid, new_bridged_nick,
+                    event.body.startswith("!join")
+                )
+            except TimeoutError as _:
+                await send_error(
+                    "Timed out trying to join puppet to MUC. \
+                        This is most often caused by your nickname being already in use. \
+                            Please change your displayname and try again."
+                )
+                return
+            except Exception as e:
+                await send_error(
+                    f"Could not join puppet because of {type(e)} error:\n{e}")
+                return
+
+            create_row_task: asyncio.Task = asyncio.create_task(
+                self.db.insert_msg_from_mtrx(
+                    event.event_id,
+                    sanitized_body,
+                    new_bridged_muc_jid,
+                    event.sender
+                )
+            )
+
+            self.bridged_mx_eventid.add(event.event_id)
+
+            mx_reply_to_id = event.source \
+                .get('content', {}) \
+                .get("m.relates_to", {}) \
+                .get("m.in_reply_to", {}) \
+                .get("event_id", None)
+
+            result = None
+            stanza_id = None
+            reply_jid = None
+            content = None
+            if mx_reply_to_id:
+                try:
+                    result = await self.db.get_xmpp_reply_data(mx_reply_to_id)
+                except Exception as e:
+                    print(e)
+
+            if stanza_id:
+
+                message: stanza.Message = self.xmpp['xep_0461'].make_reply(
+                    reply_jid or f"{self.muc_jid_str}/",
+                    stanza_id or "",
+                    fallback=content or "",
+                    mto=self.muc_jid,
+                    mbody=sanitized_body,
+                    mtype='groupchat',
+                    mfrom=user_jid,
+                )
+
+            else:
+
+                message: stanza.Message = self.xmpp.make_message(
+                    mto=self.muc_jid,
+                    mbody=sanitized_body,
+                    mtype='groupchat',
+                    mfrom=user_jid,
+
+                )
+
+            message.set_id(event.event_id)
+
+            # dont send across until we have recorded it in the database
+            try:
+                await create_row_task
+            except UniqueViolation as _:
+                # this is working as intended as to not duplicate messages
+                return
+            except Exception as e:
+                await send_error(
+                    f"Could not bridge your message because of database error of type {type(e)}. error:\n{e}")
+                return
+
+            try:
+                message.send()
+            except Exception as e:
+                await send_error(
+                    f"Could not bridge your message because matrix error of type {type(e)} error:\n{e}"
+                )
+
+    async def handle_matrix_media_message(self, room: MatrixRoom, event: RoomMessageMedia) -> None:
+        if not self.matrix:
+            raise RuntimeError("Matrix not yet initialized")
+        if not self.xmpp:
+            raise RuntimeError("XMPP not yet initialized")
+
+        # temporary until appservice is used
+        if event.sender == self.matrix.mxid:
+            return
+
+        user_jid = f"{event.sender[1:].replace(':','_')}@{self.xmpp.jid}"
+
+        new_bridged_muc_jid = util.escape_nickname(
+            self.muc_jid_str,
+            room.user_name(event.sender)
+        )
+        new_bridged_nick = new_bridged_muc_jid.resource
+
+        sanitized_body = util.illegal_xml_chars_regex.sub('', event.body)
+
+        media_id: str = str(uuid.uuid4())
+        raw_mx_filename = event.source.get('content', {}).get('filename')
+        filename: str = urllib.parse.quote_plus(
+            (raw_mx_filename or sanitized_body).split('/')[-1]
+        )
+
+        async def send_error(error_str: str):
+            await self.matrix.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.mentions": {
+                        "user_ids": [
+                            event.sender
+                        ]
+                    },
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event.event_id
+                        }
+                    },
+                    "body": error_str,
+                }
+            )
+
+        async with self.matrix_queue_lock:
+            # hold onto events until they can be bridged
+            await self.xmpp.started.wait()
+
+            try:
+                await self.join_xmpp_puppet_for_matrix(
+                    room, event.sender, user_jid, new_bridged_nick,
+                    event.body.startswith("!join")
+                )
+            except TimeoutError as _:
+                await send_error(
+                    "Timed out trying to join puppet to MUC. \
+                        This is most often caused by your nickname being already in use. \
+                            Please change your displayname and try again."
+                )
+                return
+            except Exception as e:
+                await send_error(
+                    f"Could not join puppet because of {type(e)} error:\n{e}")
+                return
+
+            create_row_task: asyncio.Task = asyncio.create_task(
+                self.db.insert_media_msg_from_mtrx(
+                    event.event_id,
+                    event.url,
+                    media_id,
+                    sanitized_body,
+                    filename,
+                    new_bridged_muc_jid,
+                    event.sender
+                )
+            )
+
+            self.bridged_mx_eventid.add(event.event_id)
+
+            mx_reply_to_id = event.source \
+                .get('content', {}) \
+                .get("m.relates_to", {}) \
+                .get("m.in_reply_to", {}) \
+                .get("event_id", None)
+
+            result = None
+            stanza_id = None
+            reply_jid = None
+            content = None
+            if mx_reply_to_id:
+                try:
+                    result = await self.db.get_xmpp_reply_data(mx_reply_to_id)
+                except Exception as e:
+                    print(e)
+
+            if result:
+                if len(result) > 2:
+                    stanza_id, reply_jid, content, *_ = result
+                else:
+                    stanza_id = result[0]
+
+            # dont send across until we have recorded it in the database
+            try:
+                await create_row_task
+            except UniqueViolation as _:
+                # this is working as intended as to not duplicate messages
+                return
+            except Exception as e:
+                await send_error(
+                    f"Could not bridge your message because of database error of type {type(e)}. error:\n{e}"
+                )
+                return
+
+            # format of https url to send to xmpp side
+            url: str = f"https://{self.http_domain}/matrix-proxy/{media_id}/{filename}"
+
+            # if theres an id to reply to for the xmpp side
+            if stanza_id:
+
+                message: stanza.Message = self.xmpp['xep_0461'].make_reply(
+                    reply_jid or f"{self.muc_jid_str}/",
+                    stanza_id or "",
+                    fallback=content or "",
+                    mto=self.muc_jid,
+                    mbody=url if raw_mx_filename is None else f"{sanitized_body}\n{url}",
+                    mtype='groupchat',
+                    mfrom=user_jid,
+                )
+
+            # we cant reply to anything, form a message normally
+            else:
+
+                # if it doesnt qualify for the caption display spec dont bridge it
+                if raw_mx_filename is None or raw_mx_filename == event.body:
+                    message: stanza.Message = self.xmpp.make_message(
+                        mto=self.muc_jid,
+                        mbody=url,
+                        mtype='groupchat',
+                        mfrom=user_jid,
+                    )
+
+                else:
+
+                    # create base message
+                    message: stanza.Message = self.xmpp.make_message(
+                        mto=self.muc_jid,
+                        mbody=f"{sanitized_body}\n{url}",
+                        mtype='groupchat',
+                        mfrom=user_jid,
+                    )
+
+                    # create fallback for the oob element
+                    from slixmpp.plugins.xep_0428.stanza import Fallback
+                    fallback = Fallback()
+                    fallback['for'] = "jabber:x:oob"
+
+                    # get start offset, +1 for the \n
+                    start = len(sanitized_body) + 1
+
+                    # add the range
+                    # pylint: disable=invalid-sequence-index
+                    fallback["body"]["start"] = start
+                    # pylint: disable=invalid-sequence-index
+                    fallback["body"]["end"] = start + len(url)
+
+                    message.append(fallback)
+
+            message.set_id(event.event_id)
+
+            # attach media tag
+            # pylint: disable=invalid-sequence-index
+            message['oob']['url'] = url
+
+            try:
+                message.send()
+            except Exception as e:
+                await send_error(
+                    f"Could not bridge your message because of XMPP error of type {type(e)}. error:\n{e}"
+                )
+
+    async def handle_matrix_receipt(self, room: MatrixRoom, event: Receipt):
+        if not self.matrix:
+            raise RuntimeError("Matrix not yet initialized")
+        if not self.xmpp:
+            raise RuntimeError("XMPP not yet initialized")
+
+        # temporary until appservice is used
+        if event.user_id == self.matrix.mxid:
+            return
+
+        # hold onto events until they can be bridged
+        await self.xmpp.started.wait()
+
+        user_jid = f"{event.user_id[1:].replace(':','_')}@{self.xmpp.jid}"
+
+        # only send receipts for joined puppets
+        if not user_jid in self.bridged_jids:
+            return
+
+        stanza_id = None
+
+        try:
+            result = await self.db.get_xmpp_reply_data(event.event_id)
+        except Exception as e:
+            print(e)
+            return
+
+        if result:
+            stanza_id = result[0]
+        else:
+            return
+
+        try:
+            self.xmpp.plugin['xep_0333'].send_marker(
+                mto=self.muc_jid,
+                id=stanza_id,
+                mtype="groupchat",
+                marker="displayed",
+                mfrom=user_jid
+            )
+        except Exception as e:
+            print(f"Could not send read receipt: {type(e).__name__}: {e}")
+
+    async def handle_matrix_redaction(self, room: MatrixRoom, event: RedactionEvent):
+        if not self.matrix:
+            raise RuntimeError("Matrix not yet initialized")
+        if not self.xmpp:
+            raise RuntimeError("XMPP not yet initialized")
+
+        # Skip if the redaction was sent by the bridge itself
+        if event.sender == self.matrix.mxid:
+            return
+
+        async def send_error(error_str: str):
+            await self.matrix.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "m.mentions": {
+                        "user_ids": [
+                            event.sender
+                        ]
+                    },
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event.event_id
+                        }
+                    },
+                    "body": error_str,
+                }
+            )
+
+        async with self.matrix_queue_lock:
+            # delete record from db so that bridged media link is broken
+            try:
+                result = await self.db.delete_media(event_id=event.redacts)
+            except Exception as e:
+                await send_error(
+                    f"Could not bridge your redaction because of database error of type {type(e)}. error:\n{e}"
+                )
+                return
+
+            # the message may not be bridged or may have already been removed
+            if not result:
+                return
+
+            # data from the db we care about
+            stanza_id = result.get('stanza_id')
+            cached_path = result.get('path')
+
+            # Cleanup local files if this was a media message
+            del_task = None
+            if cached_path:
+                del_task = asyncio.create_task(
+                    asyncio.to_thread(util.rm_file, cached_path))
+
+            # XMPP Moderation (XEP-0425)
+            if stanza_id:
+
+                if event.reason:
+                    mx_reason = util.illegal_xml_chars_regex.sub('', event.reason)
+                else:
+                    mx_reason = '<No reason provided.>'
+
+                try:
+                    await self.xmpp['xep_0425'].moderate(
+                        room=self.muc_jid,
+                        id=stanza_id,
+                        reason=f"redacted by {event.sender}: {mx_reason}",
+                        ifrom=self.xmpp.jid
+                    )
+                except Exception as e:
+                    await send_error(
+                        f"Could not bridge your redaction because of xmpp error of type {type(e)}. error:\n{e}"
+                    )
+                    return
+
+            # catch any fs error
+            if del_task:
+                try:
+                    await del_task
+                except Exception as e:
+                    await send_error(
+                        f"Could not bridge your redaction because of filesystem error of type {type(e)}. error:\n{e}"
+                    )
+                    return
