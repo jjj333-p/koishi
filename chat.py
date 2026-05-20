@@ -92,6 +92,7 @@ class KoishiRoom:
                 room=self.muc_jid,
                 nick=self.xmpp.display_name,
                 presence_options=PresenceArgs(pfrom=self.xmpp.boundjid.bare),
+                maxchars=0,
                 timeout=30
             )
             print(f"Successfully joined XMPP MUC: {self.muc_jid_str}")
@@ -486,6 +487,7 @@ class KoishiRoom:
                 room=self.muc_jid,
                 nick=nick,
                 presence_options=PresenceArgs(pfrom=jid),
+                maxchars=0,
                 timeout=15
             )
             print("joined", nick)
