@@ -117,43 +117,44 @@ class _MatrixToXEP0393Parser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.out = []
         self.tag_stack = []
+        self.pre_depth = 0
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
 
         if tag in {"strong", "b"}:
             self.out.append("*")
-            self.tag_stack.append("*")
+            self.tag_stack.append((tag, "*"))
         elif tag in {"em", "i"}:
             self.out.append("_")
-            self.tag_stack.append("_")
+            self.tag_stack.append((tag, "_"))
         elif tag in {"del", "s", "strike"}:
             self.out.append("~")
-            self.tag_stack.append("~")
-        elif tag == "code":
-            # If inside <pre>, do not add inline backticks.
-            if not self._inside("pre"):
-                self.out.append("`")
-                self.tag_stack.append("`")
-            else:
-                self.tag_stack.append("")
+            self.tag_stack.append((tag, "~"))
         elif tag == "pre":
+            self.pre_depth += 1
             self._ensure_newline()
             self.out.append("```\n")
-            self.tag_stack.append("\n```")
+            self.tag_stack.append((tag, "\n```"))
+        elif tag == "code":
+            if self.pre_depth > 0:
+                self.tag_stack.append((tag, ""))
+            else:
+                self.out.append("`")
+                self.tag_stack.append((tag, "`"))
         elif tag == "blockquote":
             self._ensure_newline()
             self.out.append("> ")
-            self.tag_stack.append("")
+            self.tag_stack.append((tag, ""))
         elif tag == "br":
             self.out.append("\n")
             if self._inside("blockquote"):
                 self.out.append("> ")
         elif tag in {"p", "div"}:
             self._ensure_newline()
-            self.tag_stack.append("")
+            self.tag_stack.append((tag, ""))
         else:
-            self.tag_stack.append("")
+            self.tag_stack.append((tag, ""))
 
     def handle_endtag(self, tag):
         tag = tag.lower()
@@ -172,8 +173,11 @@ class _MatrixToXEP0393Parser(HTMLParser):
             "p",
             "div",
         }:
-            closing = self._pop_last_relevant_closer()
+            closing = self._pop_closer_for_tag(tag)
             self.out.append(closing)
+
+            if tag == "pre" and self.pre_depth > 0:
+                self.pre_depth -= 1
 
             if tag in {"blockquote", "p", "div", "pre"}:
                 self._ensure_newline()
@@ -202,16 +206,22 @@ class _MatrixToXEP0393Parser(HTMLParser):
         # HTMLParser does not maintain a tag stack for us, so this method exists
         # mostly for readability. For our simple parser, infer from output context.
         # We separately check <pre> by scanning unclosed closers.
-        return []
+        return any(open_tag == tag for open_tag, _ in self.tag_stack)
 
     def _ensure_newline(self):
         if self.out and not self.out[-1].endswith("\n"):
             self.out.append("\n")
 
-    def _pop_last_relevant_closer(self):
-        while self.tag_stack:
-            closer = self.tag_stack.pop()
-            return closer
+    def _pop_closer_for_tag(self, tag):
+        tag = tag.lower()
+
+        for i in range(len(self.tag_stack) - 1, -1, -1):
+            open_tag, closer = self.tag_stack[i]
+
+            if open_tag == tag:
+                del self.tag_stack[i]
+                return closer
+
         return ""
 
 
