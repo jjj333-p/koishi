@@ -89,9 +89,6 @@ async def main():
     # Connect to database
     await db.connect()
 
-<<<<<<< HEAD
-    # Connect rooms (register event handlers, will join after clients connect)
-=======
     # Start XMPP component (async task)
     xmpp_task = asyncio.create_task(xmpp_side.connect())
 
@@ -100,7 +97,6 @@ async def main():
 
     # Connect rooms (register event handlers and join rooms on both sides)
     # This needs to happen after both clients start connecting
->>>>>>> ad51aa2 (some fixes)
     async def connect_rooms():
         try:
             for r in rooms:
@@ -108,11 +104,8 @@ async def main():
         except Exception as e:
             print(f"Failed to connect rooms: {e}")
             raise
-<<<<<<< HEAD
-=======
 
     room_connect_task = asyncio.create_task(connect_rooms())
->>>>>>> ad51aa2 (some fixes)
 
     # Run all services
     try:
