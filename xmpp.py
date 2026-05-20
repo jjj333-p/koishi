@@ -74,4 +74,4 @@ class KoishiComponent(ComponentXMPP):
         # Set started flag so rooms can begin joining
         self.started.set()
 
-        print("XMPP Component started")
+        print(f"XMPP Component started as {self.boundjid.bare}")

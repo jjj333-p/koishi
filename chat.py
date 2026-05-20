@@ -91,7 +91,7 @@ class KoishiRoom:
             await self.xmpp.plugin['xep_0045'].join_muc_wait(
                 room=self.muc_jid,
                 nick=self.xmpp.display_name,
-                presence_options=PresenceArgs(pfrom=self.xmpp.jid),
+                presence_options=PresenceArgs(pfrom=self.xmpp.boundjid.bare),
                 timeout=30
             )
             print(f"Successfully joined XMPP MUC: {self.muc_jid_str}")
@@ -146,7 +146,7 @@ class KoishiRoom:
         if msg_from == '':
             return
 
-        if msg.get('to') != self.xmpp.jid:
+        if msg.get('to') != self.xmpp.boundjid.bare:
             return
 
         stanza_id = msg.get('stanza_id', {}).get('id')
@@ -183,7 +183,7 @@ class KoishiRoom:
                 mto=msg_from.bare,
                 mbody=error_str,
                 mtype='groupchat',
-                mfrom=self.xmpp.jid,
+                mfrom=self.xmpp.boundjid.bare,
             ).send()
 
         async with self.xmpp_queue_lock:
@@ -274,7 +274,7 @@ class KoishiRoom:
                     id=stanza_id,
                     mtype="groupchat",
                     marker="displayed",
-                    mfrom=self.xmpp.jid
+                    mfrom=self.xmpp.boundjid.bare
                 )
 
                 try:
@@ -367,7 +367,7 @@ class KoishiRoom:
                     id=stanza_id,
                     mtype="groupchat",
                     marker="displayed",
-                    mfrom=self.xmpp.jid
+                    mfrom=self.xmpp.boundjid.bare
                 )
 
                 try:
@@ -387,7 +387,7 @@ class KoishiRoom:
         if msg_from == '':
             return
 
-        if msg.get('to') != self.xmpp.jid:
+        if msg.get('to') != self.xmpp.boundjid.bare:
             return
 
         # TODO check for server support and ignore if none
@@ -415,7 +415,7 @@ class KoishiRoom:
                 mto=msg_from.bare,
                 mbody=error_str,
                 mtype='groupchat',
-                mfrom=self.xmpp.jid,
+                mfrom=self.xmpp.boundjid.bare,
             ).send()
 
         async with self.xmpp_queue_lock:
@@ -505,7 +505,7 @@ class KoishiRoom:
         if event.sender == self.matrix.mxid:
             return
 
-        user_jid = f"{event.sender[1:].replace(':','_')}@{self.xmpp.jid}"
+        user_jid = f"{event.sender[1:].replace(':','_')}@{self.xmpp.boundjid.bare}"
 
         new_bridged_muc_jid = util.escape_nickname(
             self.muc_jid_str,
@@ -635,7 +635,7 @@ class KoishiRoom:
         if event.sender == self.matrix.mxid:
             return
 
-        user_jid = f"{event.sender[1:].replace(':','_')}@{self.xmpp.jid}"
+        user_jid = f"{event.sender[1:].replace(':','_')}@{self.xmpp.boundjid.bare}"
 
         new_bridged_muc_jid = util.escape_nickname(
             self.muc_jid_str,
@@ -820,7 +820,7 @@ class KoishiRoom:
         # hold onto events until they can be bridged
         await self.xmpp.started.wait()
 
-        user_jid = f"{event.user_id[1:].replace(':','_')}@{self.xmpp.jid}"
+        user_jid = f"{event.user_id[1:].replace(':','_')}@{self.xmpp.boundjid.bare}"
 
         # only send receipts for joined puppets
         if not user_jid in self.bridged_jids:
@@ -840,7 +840,7 @@ class KoishiRoom:
             return
 
         try:
-            self.xmpp.plugin['xep_0333'].send_marker(
+            self.xmpp['xep_0333'].send_marker(
                 mto=self.muc_jid,
                 id=stanza_id,
                 mtype="groupchat",
@@ -918,7 +918,7 @@ class KoishiRoom:
                         room=self.muc_jid,
                         id=stanza_id,
                         reason=f"redacted by {event.sender}: {mx_reason}",
-                        ifrom=self.xmpp.jid
+                        ifrom=self.xmpp.boundjid.bare
                     )
                 except Exception as e:
                     await send_error(
