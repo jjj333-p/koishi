@@ -585,6 +585,12 @@ class KoishiRoom:
                 except Exception as e:
                     print(e)
 
+            if result:
+                if len(result) > 2:
+                    stanza_id, reply_jid, content, *_ = result
+                else:
+                    stanza_id = result[0]
+
             if stanza_id:
 
                 message: stanza.Message = self.xmpp['xep_0461'].make_reply(
