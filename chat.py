@@ -284,6 +284,9 @@ class KoishiRoom:
                         body,
                         str(msg['from'])
                     )
+                except UniqueViolation as _:
+                    # this is working as intended as to not duplicate messages
+                    return
                 except Exception as e:
                     await send_error(
                         f"could not bridge message because of database error of type {type(e)}\n{e}",
