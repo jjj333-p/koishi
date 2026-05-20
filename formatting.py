@@ -117,6 +117,7 @@ class _MatrixToXEP0393Parser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.out = []
         self.tag_stack = []
+        self.open_tags = []
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
@@ -202,7 +203,15 @@ class _MatrixToXEP0393Parser(HTMLParser):
         # HTMLParser does not maintain a tag stack for us, so this method exists
         # mostly for readability. For our simple parser, infer from output context.
         # We separately check <pre> by scanning unclosed closers.
-        return []
+        return tag.lower() in self.open_tags
+
+    def _pop_open_tag(self, tag):
+        tag = tag.lower()
+
+        for i in range(len(self.open_tags) - 1, -1, -1):
+            if self.open_tags[i] == tag:
+                del self.open_tags[i]
+                break
 
     def _ensure_newline(self):
         if self.out and not self.out[-1].endswith("\n"):
