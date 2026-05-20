@@ -543,7 +543,7 @@ class KoishiRoom:
 
         new_bridged_muc_jid = util.escape_nickname(
             self.muc_jid_str,
-            room.user_name(event.sender)
+            room.user_name(event.sender) or event.sender
         )
         new_bridged_nick = new_bridged_muc_jid.resource
 
@@ -686,7 +686,7 @@ class KoishiRoom:
 
         new_bridged_muc_jid = util.escape_nickname(
             self.muc_jid_str,
-            room.user_name(event.sender)
+            room.user_name(event.sender) or event.sender
         )
         new_bridged_nick = new_bridged_muc_jid.resource
 
