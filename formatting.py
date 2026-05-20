@@ -146,6 +146,7 @@ class _MatrixToXEP0393Parser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
+        attrs_dict = dict(attrs)
 
         if tag in {"strong", "b"}:
             self.out.append("*")
@@ -157,7 +158,7 @@ class _MatrixToXEP0393Parser(HTMLParser):
             self.out.append("~")
             self.tag_stack.append((tag, "~"))
         elif tag == "a":
-            href = attrs.get("href", "")
+            href = attrs_dict.get("href", "")
             closer = f" ( {href} )" if href else ""
             self.tag_stack.append((tag, closer))
         elif tag == "pre":
