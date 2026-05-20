@@ -20,6 +20,7 @@ Licensed under AGPLv3
 
 - XMPP Puppeting (slixmpp component)
 - Bridging of messages
+    - formatting conversion between XEP-0393: Message Styling and Matrix HTML styling (TODO: update screenshots?)
     - persistent id storage for reply bridging
     - media
         - fake Auth Media + redirect to original url for XMPP -> Matrix bridging
@@ -48,7 +49,6 @@ Ranked by priority, marked by percieved difficulty if you wanted to PR
     - bridge read receipts XMPP -> Matrix
     - use puppet to let matrix auth verify retractions
     - maunium-appservice is undocumented and basically abandonware, we'll have to implement the appservice api manually
-- bridge formatting (mostly annoying, no knowledge of the codebase necessary - should be simple though just write 2 functions to go both ways and i can hook it up)
 - bridge pfps (annoying, but prob not hard)
 - Configurability of rooms through the bot for public instances (high, perhaps not worth it)
 - Add IRC support (???)
