@@ -8,6 +8,7 @@ import asyncio
 import uuid
 import urllib
 import mimetypes
+import html
 
 # matrix library
 from nio import MatrixRoom, RoomMessageText, RoomMessageMedia, Receipt, RedactionEvent, RoomSendResponse
@@ -21,6 +22,7 @@ from psycopg.errors import UniqueViolation
 from xmpp import KoishiComponent
 from db import KoishiDB
 import util
+from formatting import matrix_html_to_xep0393, xep0393_to_matrix_html
 
 # TODO: copy over control character sanitization
 
@@ -230,6 +232,13 @@ class KoishiRoom:
                 msg['fallbacks']
             )
 
+            matrix_displayname = html.escape(msg['from'].resource, quote=False)
+            matrix_body = f"{msg['from'].resource}: \n{body}"
+            matrix_formatted_body = (
+                f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong><br>"
+                f"{xep0393_to_matrix_html(body)}"
+            )
+
             # wait for connection
             await self.matrix.connected.wait()
 
@@ -241,7 +250,9 @@ class KoishiRoom:
                         message_type="m.room.message",
                         content={
                             "msgtype": "m.text",
-                            "body": f"{msg['from'].resource}: \n{body}",
+                            "body": matrix_body,
+                            "format": "org.matrix.custom.html",
+                            "formatted_body": matrix_formatted_body,
                             "com.beeper.per_message_profile": {
                                 "id": str(msg['from']),
                                 "displayname": msg['from'].resource,
@@ -329,6 +340,11 @@ class KoishiRoom:
                     return
 
                 caption = f"\n{body}" if body != attachment_url else ""
+                formatted_caption = (
+                    f"<br>{xep0393_to_matrix_html(body)}"
+                    if body != attachment_url
+                    else ""
+                )
 
                 try:
                     resp: RoomSendResponse = await self.matrix.room_send(
@@ -337,6 +353,12 @@ class KoishiRoom:
                         content={
                             "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
                             "body": f"{msg['from'].resource}: sent a(n) {mime_type}{caption}",
+                            "format": "org.matrix.custom.html",
+                            "formatted_body": (
+                                f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong>sent a(n) "
+                                f"{html.escape(mime_type, quote=False)}"
+                                f"{formatted_caption}"
+                            ),
                             "url": f"mxc://{self.http_domain}/{file_id}",
                             "info": {"mimetype": mime_type},
                             "filename": filename,
@@ -525,7 +547,14 @@ class KoishiRoom:
         )
         new_bridged_nick = new_bridged_muc_jid.resource
 
-        sanitized_body = util.illegal_xml_chars_regex.sub('', event.body)
+        matrix_content = event.source.get('content', {})
+        formatted_body = matrix_content.get('formatted_body')
+        body_for_xmpp = (
+            matrix_html_to_xep0393(formatted_body)
+            if matrix_content.get('format') == "org.matrix.custom.html" and formatted_body
+            else event.body
+        )
+        sanitized_body = util.illegal_xml_chars_regex.sub('', body_for_xmpp)
 
         async def send_error(error_str: str):
             await self.matrix.room_send(
@@ -661,7 +690,14 @@ class KoishiRoom:
         )
         new_bridged_nick = new_bridged_muc_jid.resource
 
-        sanitized_body = util.illegal_xml_chars_regex.sub('', event.body)
+        matrix_content = event.source.get('content', {})
+        formatted_body = matrix_content.get('formatted_body')
+        body_for_xmpp = (
+            matrix_html_to_xep0393(formatted_body)
+            if matrix_content.get('format') == "org.matrix.custom.html" and formatted_body
+            else event.body
+        )
+        sanitized_body = util.illegal_xml_chars_regex.sub('', body_for_xmpp)
 
         media_id: str = str(uuid.uuid4())
         raw_mx_filename = event.source.get('content', {}).get('filename')
@@ -764,12 +800,14 @@ class KoishiRoom:
             # if theres an id to reply to for the xmpp side
             if stanza_id:
 
+                has_caption = raw_mx_filename is not None and raw_mx_filename != sanitized_body
+
                 message: stanza.Message = self.xmpp['xep_0461'].make_reply(
                     reply_jid or f"{self.muc_jid_str}/",
                     stanza_id or "",
                     fallback=content or "",
                     mto=self.muc_jid,
-                    mbody=url if raw_mx_filename is None else f"{sanitized_body}\n{url}",
+                    mbody=f"{sanitized_body}\n{url}" if has_caption else url,
                     mtype='groupchat',
                     mfrom=user_jid,
                 )
@@ -778,7 +816,7 @@ class KoishiRoom:
             else:
 
                 # if it doesnt qualify for the caption display spec dont bridge it
-                if raw_mx_filename is None or raw_mx_filename == event.body:
+                if raw_mx_filename is None or raw_mx_filename == sanitized_body:
                     message: stanza.Message = self.xmpp.make_message(
                         mto=self.muc_jid,
                         mbody=url,
@@ -797,7 +835,6 @@ class KoishiRoom:
                     )
 
                     # create fallback for the oob element
-                    from slixmpp.plugins.xep_0428.stanza import Fallback
                     fallback = Fallback()
                     fallback['for'] = "jabber:x:oob"
 
