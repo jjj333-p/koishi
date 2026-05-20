@@ -34,24 +34,26 @@ def xep0393_to_matrix_html(text: str) -> str:
 
         for i, part in enumerate(code_parts):
             if len(part) >= 2 and part.startswith("`") and part.endswith("`"):
-                code_parts[i] = f"<code>{part[1:-1]}</code>"
+                code_parts[i] = f"`<code>{part[1:-1]}</code>`"
             else:
                 # Avoid matching inside words by requiring non-word-ish boundaries.
+
                 part = re.sub(
                     r"(?<!\w)\*([^*\n]+)\*(?!\w)",
-                    r"<strong>\1</strong>",
+                    r"*<strong>\1</strong>*",
                     part,
                 )
                 part = re.sub(
                     r"(?<!\w)_([^_\n]+)_(?!\w)",
-                    r"<em>\1</em>",
+                    r"_<em>\1</em>_",
                     part,
                 )
                 part = re.sub(
                     r"(?<!\w)~([^~\n]+)~(?!\w)",
-                    r"<del>\1</del>",
+                    r"~<del>\1</del>~",
                     part,
                 )
+
                 code_parts[i] = part
 
         return "".join(code_parts)
@@ -68,7 +70,8 @@ def xep0393_to_matrix_html(text: str) -> str:
             if code.endswith("\n"):
                 code = code[:-1]
 
-            output.append(f"<pre><code>{html.escape(code, quote=False)}</code></pre>")
+            escaped_code = html.escape(code, quote=False)
+            output.append(f"```<br><pre><code>{escaped_code}</code></pre><br>```")
             continue
 
         lines = part.splitlines(keepends=False)
@@ -89,7 +92,7 @@ def xep0393_to_matrix_html(text: str) -> str:
 
                 output.append(
                     "<blockquote>"
-                    + "<br>".join(quote_lines)
+                    + "<br>".join(f"&gt; {quote_line}" for quote_line in quote_lines)
                     + "</blockquote>"
                 )
                 continue
