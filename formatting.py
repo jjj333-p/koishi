@@ -49,7 +49,7 @@ def xep0393_to_matrix_html(text: str) -> str:
                     part,
                 )
                 part = re.sub(
-                    r"(?<!\w)~([^~\n]+)~(?!\w)",
+                    r"(?<!\w)~([^~\n]+)~(?!\\w)",
                     r"~<del>\1</del>~",
                     part,
                 )
@@ -58,51 +58,73 @@ def xep0393_to_matrix_html(text: str) -> str:
 
         return "".join(code_parts)
 
-    # Split out fenced code blocks.
-    parts = re.split(r"(```(?:\n)?[\s\S]*?```)", text)
-    output = []
+    def render_plain(part: str) -> str:
+        # Split out fenced code blocks after quote prefixes have already been removed.
+        parts = re.split(r"(```(?:\n)?[\s\S]*?```)", part)
+        output = []
 
-    for part in parts:
-        if part.startswith("```") and part.endswith("```"):
-            code = part[3:-3]
-            if code.startswith("\n"):
-                code = code[1:]
-            if code.endswith("\n"):
-                code = code[:-1]
+        for subpart in parts:
+            if subpart.startswith("```") and subpart.endswith("```"):
+                code = subpart[3:-3]
+                if code.startswith("\n"):
+                    code = code[1:]
+                if code.endswith("\n"):
+                    code = code[:-1]
 
-            output.append(f"<pre><code>{html.escape(code, quote=False)}</code></pre>")
-            continue
-
-        lines = part.splitlines(keepends=False)
-        i = 0
-
-        while i < len(lines):
-            line = lines[i]
-
-            if line.startswith(">"):
-                quote_lines = []
-
-                while i < len(lines) and lines[i].startswith(">"):
-                    quote_line = lines[i][1:]
-                    if quote_line.startswith(" "):
-                        quote_line = quote_line[1:]
-                    quote_lines.append(convert_inline(quote_line))
-                    i += 1
-
-                output.append(
-                    "<blockquote>"
-                    + "<br>".join(quote_lines)
-                    + "</blockquote>"
-                )
+                output.append(f"<pre><code>{html.escape(code, quote=False)}</code></pre>")
                 continue
 
-            output.append(convert_inline(line))
-            i += 1
+            lines = subpart.splitlines(keepends=False)
+
+            for i, line in enumerate(lines):
+                output.append(convert_inline(line))
+
+                if i < len(lines) - 1:
+                    output.append("<br>")
+
+        return "".join(output)
+
+    lines = text.splitlines(keepends=False)
+    output = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        if line.startswith(">"):
+            quote_lines = []
+
+            while i < len(lines) and lines[i].startswith(">"):
+                quote_line = lines[i][1:]
+                if quote_line.startswith(" "):
+                    quote_line = quote_line[1:]
+                quote_lines.append(quote_line)
+                i += 1
+
+            output.append(
+                "<blockquote>"
+                + render_plain("\n".join(quote_lines))
+                + "</blockquote>"
+            )
 
             if i < len(lines):
                 output.append("<br>")
 
+            continue
+
+        plain_lines = []
+
+        while i < len(lines) and not lines[i].startswith(">"):
+            plain_lines.append(lines[i])
+            i += 1
+
+        output.append(render_plain("\n".join(plain_lines)))
+
+        if i < len(lines):
+            output.append("<br>")
+
     return "".join(output)
+
 
 
 class _MatrixToXEP0393Parser(HTMLParser):
