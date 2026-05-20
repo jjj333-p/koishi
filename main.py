@@ -35,62 +35,59 @@ for mapping in login['bridge-mapping']:
     mapping_by_room_id[mapping['matrix']] = jid
     mapping_by_muc_jid[jid] = mapping['matrix']
 
-# Initialize components
-db: KoishiDB = KoishiDB(
-    conn_str=login['postgresql_conn'],
-    min_connections=1,
-    max_connections=3,
-)
-
-webserver: KoishiWebserver = KoishiWebserver(
-    db, login['matrix']['domain'], login['http_domain'])
-
-xmpp_side: KoishiComponent = KoishiComponent(
-    # mapping_by_muc_jid,
-    # db,
-    jid=login['xmpp']['jid'],
-    secret=login['xmpp']['secret'],
-    server=login['xmpp']['domain'],
-    port=login['xmpp']['port'],
-    display_name=login['vanity_name'],
-)
-
-matrix_side: KoishiMatrixClient = KoishiMatrixClient(
-    homeserver=login['matrix']['domain'],
-    mxid=login['matrix']['mxid'],
-    password=login['matrix']['password']
-)
-
-# Set cross-references
-webserver.set_matrix_side(matrix_side)
-xmpp_side.set_matrix_side(matrix_side)
-
-# Create room handlers
-rooms: list[KoishiRoom] = []
-for mapping in login['bridge-mapping']:
-    room = KoishiRoom(
-        http_domain=login['http_domain'],
-        mappingJSON=mapping,
-        db=db,
-        xmpp_side=xmpp_side,
-        matrix_side=matrix_side
-    )
-    rooms.append(room)
-
-    # Register with Matrix client for event routing
-    matrix_side.register_room(mapping['matrix'], room)
-
 
 async def main():
     # Setup Logging
     logging.basicConfig(level=logging.DEBUG,
                         format='%(levelname)-8s %(message)s')
 
+    # Initialize components inside async context
+    db: KoishiDB = KoishiDB(
+        conn_str=login['postgresql_conn'],
+        min_connections=1,
+        max_connections=3,
+    )
+
+    webserver: KoishiWebserver = KoishiWebserver(
+        db, login['matrix']['domain'], login['http_domain'])
+
+    xmpp_side: KoishiComponent = KoishiComponent(
+        jid=login['xmpp']['jid'],
+        secret=login['xmpp']['secret'],
+        server=login['xmpp']['domain'],
+        port=login['xmpp']['port'],
+        display_name=login['vanity_name'],
+    )
+
+    matrix_side: KoishiMatrixClient = KoishiMatrixClient(
+        homeserver=login['matrix']['domain'],
+        mxid=login['matrix']['mxid'],
+        password=login['matrix']['password']
+    )
+
+    # Set cross-references
+    webserver.set_matrix_side(matrix_side)
+    xmpp_side.set_matrix_side(matrix_side)
+
+    # Create room handlers
+    rooms: list[KoishiRoom] = []
+    for mapping in login['bridge-mapping']:
+        room = KoishiRoom(
+            http_domain=login['http_domain'],
+            mappingJSON=mapping,
+            db=db,
+            xmpp_side=xmpp_side,
+            matrix_side=matrix_side
+        )
+        rooms.append(room)
+
+        # Register with Matrix client for event routing
+        matrix_side.register_room(mapping['matrix'], room)
+
     # Connect to database
     await db.connect()
 
     # Connect rooms (register event handlers and join rooms on both sides)
-    # This needs to happen after both clients start connecting
     async def connect_rooms():
         try:
             for r in rooms:
@@ -99,9 +96,8 @@ async def main():
             print(f"Failed to connect rooms: {e}")
             raise
 
-    # Run all services
+    # Run all services concurrently
     try:
-        # Start everything concurrently
         await asyncio.gather(
             xmpp_side.connect(),
             matrix_side.connect_and_sync(),
@@ -131,4 +127,4 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        print("\nShutdown requested...")

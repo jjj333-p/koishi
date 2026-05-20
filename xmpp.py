@@ -19,9 +19,14 @@ class KoishiComponent(ComponentXMPP):
         port: int,
         display_name: str,
     ):
+        # Get the current event loop before initializing ComponentXMPP
+        loop = asyncio.get_event_loop()
+        
         ComponentXMPP.__init__(self, jid, secret, server, port)
+        
+        # Ensure slixmpp uses the current event loop
+        self.loop = loop
 
-        self.jid = jid
         self.display_name = display_name
 
         self.started: asyncio.Event = asyncio.Event()
