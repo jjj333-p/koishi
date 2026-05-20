@@ -156,6 +156,10 @@ class _MatrixToXEP0393Parser(HTMLParser):
         elif tag in {"del", "s", "strike"}:
             self.out.append("~")
             self.tag_stack.append((tag, "~"))
+        elif tag == "a":
+            href = attrs.get("href", "")
+            closer = f" ( {href} )" if href else ""
+            self.tag_stack.append((tag, closer))
         elif tag == "pre":
             self.pre_depth += 1
             self._ensure_newline()
@@ -192,6 +196,7 @@ class _MatrixToXEP0393Parser(HTMLParser):
             "del",
             "s",
             "strike",
+            "a",
             "code",
             "pre",
             "blockquote",
