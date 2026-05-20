@@ -175,7 +175,7 @@ class KoishiRoom:
             return
 
         # closure for consistent error handling
-        def send_error(error_str: str, fallback_txt: str = '') -> None:
+        async def send_error(error_str: str, fallback_txt: str = '') -> None:
             self.xmpp['xep_0461'].make_reply(
                 msg_from,
                 stanza_id,
@@ -230,7 +230,7 @@ class KoishiRoom:
             )
 
             # wait for connection
-            await self.matrix.connected.Wait()
+            await self.matrix.connected.wait()
 
             if not attachment_url:
                 try:
@@ -404,7 +404,7 @@ class KoishiRoom:
         reason = retract['reason']
 
         # closure for consistent error handling
-        def send_error(error_str: str, fallback_txt: str = '') -> None:
+        async def send_error(error_str: str, fallback_txt: str = '') -> None:
             self.xmpp['xep_0461'].make_reply(
                 msg_from,
                 stanza_id,
@@ -442,7 +442,7 @@ class KoishiRoom:
                     asyncio.to_thread(util.rm_file, cached_path))
 
             # wait for connection
-            await self.matrix.connected.Wait()
+            await self.matrix.connected.wait()
 
             # Perform Matrix Redaction
             if event_id:
