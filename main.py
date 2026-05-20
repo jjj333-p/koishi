@@ -46,8 +46,8 @@ webserver: KoishiWebserver = KoishiWebserver(
     db, login['matrix']['domain'], login['http_domain'])
 
 xmpp_side: KoishiComponent = KoishiComponent(
-    mapping_by_muc_jid,
-    db,
+    # mapping_by_muc_jid,
+    # db,
     jid=login['xmpp']['jid'],
     secret=login['xmpp']['secret'],
     server=login['xmpp']['domain'],
@@ -76,7 +76,7 @@ for mapping in login['bridge-mapping']:
         matrix_side=matrix_side
     )
     rooms.append(room)
-    
+
     # Register with Matrix client for event routing
     matrix_side.register_room(mapping['matrix'], room)
 
@@ -89,7 +89,18 @@ async def main():
     # Connect to database
     await db.connect()
 
+<<<<<<< HEAD
     # Connect rooms (register event handlers, will join after clients connect)
+=======
+    # Start XMPP component (async task)
+    xmpp_task = asyncio.create_task(xmpp_side.connect())
+
+    # Start Matrix client (async task)
+    matrix_task = asyncio.create_task(matrix_side.connect_and_sync())
+
+    # Connect rooms (register event handlers and join rooms on both sides)
+    # This needs to happen after both clients start connecting
+>>>>>>> ad51aa2 (some fixes)
     async def connect_rooms():
         try:
             for r in rooms:
@@ -97,6 +108,11 @@ async def main():
         except Exception as e:
             print(f"Failed to connect rooms: {e}")
             raise
+<<<<<<< HEAD
+=======
+
+    room_connect_task = asyncio.create_task(connect_rooms())
+>>>>>>> ad51aa2 (some fixes)
 
     # Run all services
     try:

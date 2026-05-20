@@ -7,9 +7,10 @@ Distributed as-is and without warranty
 import asyncio
 import uuid
 import urllib
+import mimetypes
 
 # matrix library
-from nio import MatrixRoom, RoomMessageText, RoomMessageMedia, Receipt, RedactionEvent
+from nio import MatrixRoom, RoomMessageText, RoomMessageMedia, Receipt, RedactionEvent, RoomSendResponse
 # import a psycopg error
 from slixmpp import stanza, JID
 from slixmpp.types import PresenceArgs
@@ -60,7 +61,7 @@ class KoishiRoom:
 
     async def connect(self):
         """Connect room event handlers and join both MUC and Matrix room"""
-        
+
         # Register XMPP event handlers
         async def _handle_xmpp_message(msg):
             await self.handle_xmpp_message(msg)
@@ -73,18 +74,19 @@ class KoishiRoom:
 
         self.xmpp.add_event_handler(
             f"muc::{self.muc_jid_str}::message", _handle_xmpp_message)
-        
+
         self.xmpp.add_event_handler(
             f"muc::{self.muc_jid_str}::message_error", _handle_xmpp_message_error)
-        
+
         self.xmpp.add_event_handler(
             f"muc::{self.muc_jid_str}::moderated_message", _handle_xmpp_moderation)
-        
+
         # Wait for XMPP component to be ready
         await self.xmpp.started.wait()
-        
+
         # Join the MUC as the bridge component
-        print(f"Joining XMPP MUC: {self.muc_jid_str} as {self.xmpp.display_name}")
+        print(
+            f"Joining XMPP MUC: {self.muc_jid_str} as {self.xmpp.display_name}")
         try:
             await self.xmpp.plugin['xep_0045'].join_muc_wait(
                 room=self.muc_jid,
@@ -96,10 +98,10 @@ class KoishiRoom:
         except Exception as e:
             print(f"Failed to join XMPP MUC {self.muc_jid_str}: {e}")
             raise
-        
+
         # Wait for Matrix client to be ready
         await self.matrix.connected.wait()
-        
+
         # Join the Matrix room
         print(f"Joining Matrix room: {self.mx_rid}")
         try:
@@ -114,9 +116,9 @@ class KoishiRoom:
             raise RuntimeError("Matrix side not initialized")
 
         import xml.etree.ElementTree as ET
-        
+
         ET.indent(msg.xml, space="  ")
-        
+
         try:
             await self.matrix.room_send(
                 room_id=self.mx_rid,
@@ -132,7 +134,8 @@ class KoishiRoom:
                 },
             )
         except Exception as e:
-            print(f"Could not send error message to Matrix: {type(e).__name__}: {e}")
+            print(
+                f"Could not send error message to Matrix: {type(e).__name__}: {e}")
 
     async def handle_xmpp_message(self, msg):
 
@@ -902,7 +905,8 @@ class KoishiRoom:
             if stanza_id:
 
                 if event.reason:
-                    mx_reason = util.illegal_xml_chars_regex.sub('', event.reason)
+                    mx_reason = util.illegal_xml_chars_regex.sub(
+                        '', event.reason)
                 else:
                     mx_reason = '<No reason provided.>'
 
