@@ -70,8 +70,7 @@ def xep0393_to_matrix_html(text: str) -> str:
             if code.endswith("\n"):
                 code = code[:-1]
 
-            escaped_code = html.escape(code, quote=False)
-            output.append(f"```<br><pre><code>{escaped_code}</code></pre><br>```")
+            output.append(f"<pre><code>{html.escape(code, quote=False)}</code></pre>")
             continue
 
         lines = part.splitlines(keepends=False)
@@ -92,7 +91,7 @@ def xep0393_to_matrix_html(text: str) -> str:
 
                 output.append(
                     "<blockquote>"
-                    + "<br>".join(f"&gt; {quote_line}" for quote_line in quote_lines)
+                    + "<br>".join(quote_lines)
                     + "</blockquote>"
                 )
                 continue
