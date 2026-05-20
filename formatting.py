@@ -110,6 +110,9 @@ def xep0393_to_matrix_html(text: str) -> str:
             if i < len(lines):
                 output.append("<br>")
 
+                if lines[i] == "":
+                    i += 1
+
             continue
 
         plain_lines = []
