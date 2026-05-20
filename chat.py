@@ -241,7 +241,12 @@ class KoishiRoom:
                         message_type="m.room.message",
                         content={
                             "msgtype": "m.text",
-                            "body": f"{msg['from'].resource}:\n{body}",
+                            "body": f"{msg['from'].resource}: \n{body}",
+                            "com.beeper.per_message_profile": {
+                                "id": str(msg['from']),
+                                "displayname": msg['from'].resource,
+                                "has_fallback": True,
+                            },
                             # TODO: properly parse out mentions based on bridged displayname
                             ** (
                                 {
@@ -336,6 +341,11 @@ class KoishiRoom:
                             "info": {"mimetype": mime_type},
                             "filename": filename,
                             "external_url": attachment_url,
+                            "com.beeper.per_message_profile": {
+                                "id": str(msg['from']),
+                                "displayname": msg['from'].resource,
+                                "has_fallback": True,
+                            },
                             ** (
                                 {
                                     "m.mentions": {
