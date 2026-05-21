@@ -26,37 +26,109 @@ def xep0393_to_matrix_html(text: str) -> str:
     """
 
     def convert_inline(s: str) -> str:
-        # Escape first so user-provided HTML is not interpreted.
-        s = html.escape(s, quote=False)
+        """
+        Convert inline XEP-0393 spans within a single block.
 
-        # Inline code first, so styling inside code is not processed.
-        code_parts = re.split(r"(`[^`\n]+`)", s)
+        XEP-0393 span rules handled here:
+          - spans do not cross block boundaries because this function receives one line/block
+          - opening directive must be at block start, after whitespace, or after a different
+            opening styling directive
+          - opening directive must not be followed by whitespace
+          - closing directive must not be preceded by whitespace
+          - matched spans must contain text between directives
+          - matching is lazy
+          - invalid directive-looking characters are treated as literal text
 
-        for i, part in enumerate(code_parts):
-            if len(part) >= 2 and part.startswith("`") and part.endswith("`"):
-                code_parts[i] = f"`<code>{part[1:-1]}</code>`"
-            else:
-                # Avoid matching inside words by requiring non-word-ish boundaries.
+        The original inline styling directives are preserved in the output.
+        For example, *bold* becomes *<strong>bold</strong>*.
+        """
+        markers = {
+            "*": "strong",
+            "_": "em",
+            "~": "del",
+            "`": "code",
+        }
+        source_open_positions = {}
 
-                part = re.sub(
-                    r"(?<!\w)\*([^*\n]+)\*(?!\w)",
-                    r"*<strong>\1</strong>*",
-                    part,
-                )
-                part = re.sub(
-                    r"(?<!\w)_([^_\n]+)_(?!\w)",
-                    r"_<em>\1</em>_",
-                    part,
-                )
-                part = re.sub(
-                    r"(?<!\w)~([^~\n]+)~(?!\\w)",
-                    r"~<del>\1</del>~",
-                    part,
-                )
+        def is_valid_open(pos: int, marker: str) -> bool:
+            if pos + 1 >= len(s):
+                return False
 
-                code_parts[i] = part
+            if s[pos + 1].isspace():
+                return False
 
-        return "".join(code_parts)
+            if pos == 0:
+                return True
+
+            previous = s[pos - 1]
+
+            if previous.isspace():
+                return True
+
+            previous_open_marker = source_open_positions.get(pos - 1)
+            return previous_open_marker is not None and previous_open_marker != marker
+
+        def is_valid_close(pos: int, start: int) -> bool:
+            if pos <= start + 1:
+                return False
+
+            return not s[pos - 1].isspace()
+
+        def find_closing(start: int, end: int, marker: str) -> int | None:
+            pos = start + 1
+
+            while pos < end:
+                if s[pos] == marker and is_valid_close(pos, start):
+                    return pos
+
+                pos += 1
+
+            return None
+
+        def parse_range(
+            start: int,
+            end: int,
+            disabled_markers: set[str] | None = None,
+        ) -> str:
+            if disabled_markers is None:
+                disabled_markers = set()
+
+            out = []
+            i = start
+
+            while i < end:
+                ch = s[i]
+
+                if ch in markers and ch not in disabled_markers:
+                    if is_valid_open(i, ch):
+                        close = find_closing(i, end, ch)
+
+                        if close is not None:
+                            tag = markers[ch]
+                            source_open_positions[i] = ch
+
+                            if ch == "`":
+                                content = html.escape(s[i + 1:close], quote=False)
+                            else:
+                                content = parse_range(
+                                    i + 1,
+                                    close,
+                                    disabled_markers | {ch},
+                                )
+
+                            escaped_marker = html.escape(ch, quote=False)
+                            out.append(
+                                f"{escaped_marker}<{tag}>{content}</{tag}>{escaped_marker}"
+                            )
+                            i = close + 1
+                            continue
+
+                out.append(html.escape(ch, quote=False))
+                i += 1
+
+            return "".join(out)
+
+        return parse_range(0, len(s))
 
     def render_plain(part: str) -> str:
         # Split out fenced code blocks after quote prefixes have already been removed.
