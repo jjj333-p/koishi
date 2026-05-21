@@ -235,7 +235,7 @@ class KoishiRoom:
             matrix_displayname = html.escape(msg['from'].resource, quote=False)
             matrix_body = f"{msg['from'].resource}: {body}"
             matrix_formatted_body = (
-                f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong>"
+                f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong> "
                 f"{xep0393_to_matrix_html(body)}"
             )
 
@@ -355,7 +355,7 @@ class KoishiRoom:
                             "body": f"{msg['from'].resource}: sent a(n) {mime_type}{caption}",
                             "format": "org.matrix.custom.html",
                             "formatted_body": (
-                                f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong>sent a(n) "
+                                f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong> sent a(n) "
                                 f"{html.escape(mime_type, quote=False)}"
                                 f"{formatted_caption}"
                             ),
