@@ -47,7 +47,7 @@ def xep0393_to_matrix_html(text: str) -> str:
                     r"(?<!\w)_([^_\n]+)_(?!\w)",
                     r"_<em>\1</em>_",
                     part,
-                    )
+                )
                 part = re.sub(
                     r"(?<!\w)~([^~\n]+)~(?!\\w)",
                     r"~<del>\1</del>~",
@@ -214,7 +214,7 @@ class _MatrixToXEP0393Parser(HTMLParser):
                 self._ensure_newline()
 
     def handle_data(self, data):
-        if data.strip() == "" and "\n" in data and self.out and self.out[-1].endswith("\n"):
+        if self.pre_depth == 0 and data.strip() == "" and "\n" in data:
             return
 
         self.out.append(data)
@@ -234,13 +234,8 @@ class _MatrixToXEP0393Parser(HTMLParser):
         return result.strip()
 
     def _inside(self, tag):
-        return tag.lower() in [t.lower() for t in self._open_tags()]
-
-    def _open_tags(self):
-        # HTMLParser does not maintain a tag stack for us, so this method exists
-        # mostly for readability. For our simple parser, infer from output context.
-        # We separately check <pre> by scanning unclosed closers.
-        return any(open_tag == tag for open_tag, _ in self.tag_stack)
+        tag = tag.lower()
+        return any(open_tag.lower() == tag for open_tag, _ in self.tag_stack)
 
     def _ensure_newline(self):
         if self.out and not self.out[-1].endswith("\n"):
