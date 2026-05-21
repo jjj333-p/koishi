@@ -143,9 +143,19 @@ class _MatrixToXEP0393Parser(HTMLParser):
         self.out = []
         self.tag_stack = []
         self.pre_depth = 0
+        self.skip_depth = 0
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
+
+        if tag == "mx-reply":
+            self.skip_depth += 1
+            return
+
+        if self.skip_depth > 0:
+            self.skip_depth += 1
+            return
+
         attrs_dict = dict(attrs)
 
         if tag in {"strong", "b"}:
@@ -192,6 +202,10 @@ class _MatrixToXEP0393Parser(HTMLParser):
     def handle_endtag(self, tag):
         tag = tag.lower()
 
+        if self.skip_depth > 0:
+            self.skip_depth -= 1
+            return
+
         if tag in {
             "strong",
             "b",
@@ -217,15 +231,24 @@ class _MatrixToXEP0393Parser(HTMLParser):
                 self._ensure_newline()
 
     def handle_data(self, data):
+        if self.skip_depth > 0:
+            return
+
         if self.pre_depth == 0 and data.strip() == "" and "\n" in data:
             return
 
         self.out.append(data)
 
     def handle_entityref(self, name):
+        if self.skip_depth > 0:
+            return
+
         self.out.append(html.unescape(f"&{name};"))
 
     def handle_charref(self, name):
+        if self.skip_depth > 0:
+            return
+
         self.out.append(html.unescape(f"&#{name};"))
 
     def get_text(self):
