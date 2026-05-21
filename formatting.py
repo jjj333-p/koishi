@@ -181,7 +181,10 @@ class _MatrixToXEP0393Parser(HTMLParser):
             if self._inside("blockquote"):
                 self.out.append("> ")
         elif tag in {"p", "div"}:
-            self._ensure_newline()
+            if self._inside("blockquote"):
+                self._ensure_blockquote_prefix()
+            else:
+                self._ensure_newline()
             self.tag_stack.append((tag, ""))
         else:
             self.tag_stack.append((tag, ""))
@@ -236,6 +239,16 @@ class _MatrixToXEP0393Parser(HTMLParser):
     def _inside(self, tag):
         tag = tag.lower()
         return any(open_tag.lower() == tag for open_tag, _ in self.tag_stack)
+
+    def _ensure_blockquote_prefix(self):
+        if not self.out:
+            self.out.append("> ")
+        elif self.out[-1] == "> ":
+            return
+        elif self.out[-1].endswith("\n"):
+            self.out.append("> ")
+        else:
+            self.out.append("\n> ")
 
     def _ensure_newline(self):
         if self.out and not self.out[-1].endswith("\n"):
