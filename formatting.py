@@ -47,7 +47,7 @@ def xep0393_to_matrix_html(text: str) -> str:
                     r"(?<!\w)_([^_\n]+)_(?!\w)",
                     r"_<em>\1</em>_",
                     part,
-                )
+                    )
                 part = re.sub(
                     r"(?<!\w)~([^~\n]+)~(?!\\w)",
                     r"~<del>\1</del>~",
@@ -214,6 +214,9 @@ class _MatrixToXEP0393Parser(HTMLParser):
                 self._ensure_newline()
 
     def handle_data(self, data):
+        if data.strip() == "" and "\n" in data and self.out and self.out[-1].endswith("\n"):
+            return
+
         self.out.append(data)
 
     def handle_entityref(self, name):

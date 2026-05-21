@@ -233,9 +233,9 @@ class KoishiRoom:
             )
 
             matrix_displayname = html.escape(msg['from'].resource, quote=False)
-            matrix_body = f"{msg['from'].resource}: \n{body}"
+            matrix_body = f"{msg['from'].resource}: {body}"
             matrix_formatted_body = (
-                f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong><br>"
+                f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong>"
                 f"{xep0393_to_matrix_html(body)}"
             )
 
