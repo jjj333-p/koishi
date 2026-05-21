@@ -14,15 +14,14 @@ def xep0393_to_matrix_html(text: str) -> str:
     Convert a subset of XMPP XEP-0393 Message Styling to Matrix pseudo-HTML.
 
     Supported:
-      *bold*           -> <strong>bold</strong>
-      _italic_         -> <em>italic</em>
-      ~strike~         -> <del>strike</del>
-      `code`           -> <code>code</code>
+      *bold*           -> *<strong>bold</strong>*
+      _italic_         -> _<em>italic</em>_
+      ~strike~         -> ~<del>strike</del>~
+      `code`           -> `<code>code</code>`
       ```code block``` -> <pre><code>code block</code></pre>
       > quote          -> <blockquote>quote</blockquote>
 
-    This is intentionally conservative and does not try to implement every
-    edge case of XEP-0393 parsing.
+    The original inline styling directives are intentionally preserved.
     """
 
     def convert_inline(s: str) -> str:
@@ -38,9 +37,6 @@ def xep0393_to_matrix_html(text: str) -> str:
           - matched spans must contain text between directives
           - matching is lazy
           - invalid directive-looking characters are treated as literal text
-
-        The original inline styling directives are preserved in the output.
-        For example, *bold* becomes *<strong>bold</strong>*.
         """
         markers = {
             "*": "strong",
@@ -99,29 +95,28 @@ def xep0393_to_matrix_html(text: str) -> str:
             while i < end:
                 ch = s[i]
 
-                if ch in markers and ch not in disabled_markers:
-                    if is_valid_open(i, ch):
-                        close = find_closing(i, end, ch)
+                if ch in markers and ch not in disabled_markers and is_valid_open(i, ch):
+                    close = find_closing(i, end, ch)
 
-                        if close is not None:
-                            tag = markers[ch]
-                            source_open_positions[i] = ch
+                    if close is not None:
+                        tag = markers[ch]
+                        source_open_positions[i] = ch
 
-                            if ch == "`":
-                                content = html.escape(s[i + 1:close], quote=False)
-                            else:
-                                content = parse_range(
-                                    i + 1,
-                                    close,
-                                    disabled_markers | {ch},
-                                )
-
-                            escaped_marker = html.escape(ch, quote=False)
-                            out.append(
-                                f"{escaped_marker}<{tag}>{content}</{tag}>{escaped_marker}"
+                        if ch == "`":
+                            content = html.escape(s[i + 1:close], quote=False)
+                        else:
+                            content = parse_range(
+                                i + 1,
+                                close,
+                                disabled_markers | {ch},
                             )
-                            i = close + 1
-                            continue
+
+                        escaped_marker = html.escape(ch, quote=False)
+                        out.append(
+                            f"{escaped_marker}<{tag}>{content}</{tag}>{escaped_marker}"
+                        )
+                        i = close + 1
+                        continue
 
                 out.append(html.escape(ch, quote=False))
                 i += 1
@@ -143,7 +138,8 @@ def xep0393_to_matrix_html(text: str) -> str:
                 if code.endswith("\n"):
                     code = code[:-1]
 
-                output.append(f"<pre><code>{html.escape(code, quote=False)}</code></pre>")
+                output.append(
+                    f"<pre><code>{html.escape(code, quote=False)}</code></pre>")
                 continue
 
             lines = subpart.splitlines(keepends=False)
@@ -201,18 +197,31 @@ def xep0393_to_matrix_html(text: str) -> str:
     return "".join(output)
 
 
-
 class _MatrixToXEP0393Parser(HTMLParser):
     """
     Small Matrix pseudo-HTML to XEP-0393 converter.
 
-    It only preserves a safe/common subset of Matrix formatting.
-    Unknown tags are ignored while their text content is kept.
+    It preserves a safe/common subset of Matrix formatting. Inline formatting
+    is buffered so the emitted XEP-0393 directives can be adjusted to satisfy
+    span boundary rules.
     """
+
+    INLINE_MARKERS = {
+        "strong": "*",
+        "b": "*",
+        "em": "_",
+        "i": "_",
+        "del": "~",
+        "s": "~",
+        "strike": "~",
+    }
+
+    BLOCK_TAGS = {"blockquote", "p", "div", "pre"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.out = []
+        self.inline_stack = []
         self.tag_stack = []
         self.pre_depth = 0
         self.skip_depth = 0
@@ -230,15 +239,15 @@ class _MatrixToXEP0393Parser(HTMLParser):
 
         attrs_dict = dict(attrs)
 
-        if tag in {"strong", "b"}:
-            self.out.append("*")
-            self.tag_stack.append((tag, "*"))
-        elif tag in {"em", "i"}:
-            self.out.append("_")
-            self.tag_stack.append((tag, "_"))
-        elif tag in {"del", "s", "strike"}:
-            self.out.append("~")
-            self.tag_stack.append((tag, "~"))
+        if tag in self.INLINE_MARKERS:
+            self._start_inline(tag, self.INLINE_MARKERS[tag])
+            self.tag_stack.append((tag, ""))
+        elif tag == "code":
+            if self.pre_depth > 0:
+                self.tag_stack.append((tag, ""))
+            else:
+                self._start_inline(tag, "`")
+                self.tag_stack.append((tag, ""))
         elif tag == "a":
             href = attrs_dict.get("href", "")
             closer = f" ( {href} )" if href else ""
@@ -246,22 +255,16 @@ class _MatrixToXEP0393Parser(HTMLParser):
         elif tag == "pre":
             self.pre_depth += 1
             self._ensure_newline()
-            self.out.append("```\n")
+            self._append("```\n")
             self.tag_stack.append((tag, "\n```"))
-        elif tag == "code":
-            if self.pre_depth > 0:
-                self.tag_stack.append((tag, ""))
-            else:
-                self.out.append("`")
-                self.tag_stack.append((tag, "`"))
         elif tag == "blockquote":
             self._ensure_newline()
-            self.out.append("> ")
+            self._append("> ")
             self.tag_stack.append((tag, ""))
         elif tag == "br":
-            self.out.append("\n")
+            self._append("\n")
             if self._inside("blockquote"):
-                self.out.append("> ")
+                self._append("> ")
         elif tag in {"p", "div"}:
             if self._inside("blockquote"):
                 self._ensure_blockquote_prefix()
@@ -278,14 +281,17 @@ class _MatrixToXEP0393Parser(HTMLParser):
             self.skip_depth -= 1
             return
 
+        if tag in self.INLINE_MARKERS:
+            self._end_inline(tag)
+            self._pop_closer_for_tag(tag)
+            return
+
+        if tag == "code" and self.pre_depth == 0:
+            self._end_inline(tag)
+            self._pop_closer_for_tag(tag)
+            return
+
         if tag in {
-            "strong",
-            "b",
-            "em",
-            "i",
-            "del",
-            "s",
-            "strike",
             "a",
             "code",
             "pre",
@@ -294,12 +300,12 @@ class _MatrixToXEP0393Parser(HTMLParser):
             "div",
         }:
             closing = self._pop_closer_for_tag(tag)
-            self.out.append(closing)
+            self._append(closing)
 
             if tag == "pre" and self.pre_depth > 0:
                 self.pre_depth -= 1
 
-            if tag in {"blockquote", "p", "div", "pre"}:
+            if tag in self.BLOCK_TAGS:
                 self._ensure_newline()
 
     def handle_data(self, data):
@@ -309,21 +315,25 @@ class _MatrixToXEP0393Parser(HTMLParser):
         if self.pre_depth == 0 and data.strip() == "" and "\n" in data:
             return
 
-        self.out.append(data)
+        self._append(data)
 
     def handle_entityref(self, name):
         if self.skip_depth > 0:
             return
 
-        self.out.append(html.unescape(f"&{name};"))
+        self._append(html.unescape(f"&{name};"))
 
     def handle_charref(self, name):
         if self.skip_depth > 0:
             return
 
-        self.out.append(html.unescape(f"&#{name};"))
+        self._append(html.unescape(f"&#{name};"))
 
     def get_text(self):
+        while self.inline_stack:
+            frame = self.inline_stack.pop()
+            self._append("".join(frame["parts"]))
+
         result = "".join(self.out)
 
         # Clean up excessive blank lines while preserving intentional line breaks.
@@ -331,23 +341,104 @@ class _MatrixToXEP0393Parser(HTMLParser):
 
         return result.strip()
 
+    def _append(self, text):
+        if self.inline_stack:
+            self.inline_stack[-1]["parts"].append(text)
+        else:
+            self.out.append(text)
+
+    def _current_output_text(self):
+        if self.inline_stack:
+            return "".join(self.inline_stack[-1]["parts"])
+
+        return "".join(self.out)
+
+    def _start_inline(self, tag, marker):
+        self.inline_stack.append({
+            "tag": tag,
+            "marker": marker,
+            "parts": [],
+        })
+
+    def _end_inline(self, tag):
+        for i in range(len(self.inline_stack) - 1, -1, -1):
+            frame = self.inline_stack[i]
+
+            if frame["tag"] != tag:
+                continue
+
+            del self.inline_stack[i]
+
+            marker = frame["marker"]
+            content = "".join(frame["parts"])
+            rendered = self._render_inline(marker, content)
+            self._append(rendered)
+            return True
+
+        return False
+
+    def _render_inline(self, marker, content):
+        if not content:
+            return content
+
+        leading_len = len(content) - len(content.lstrip())
+        trailing_len = len(content) - len(content.rstrip())
+
+        leading = content[:leading_len]
+        trailing = content[len(content) -
+                           trailing_len:] if trailing_len else ""
+        inner_end = len(content) - \
+            trailing_len if trailing_len else len(content)
+        inner = content[leading_len:inner_end]
+
+        if not inner:
+            return content
+
+        prefix = leading
+
+        if self._needs_space_before_marker(marker):
+            prefix += " "
+
+        return f"{prefix}{marker}{inner}{marker}{trailing}"
+
+    def _needs_space_before_marker(self, marker):
+        current = self._current_output_text()
+
+        if not current:
+            return False
+
+        previous = current[-1]
+
+        if previous.isspace():
+            return False
+
+        if self.inline_stack:
+            previous_marker = self.inline_stack[-1].get("marker")
+            return previous_marker is None or previous_marker == marker
+
+        return True
+
     def _inside(self, tag):
         tag = tag.lower()
         return any(open_tag.lower() == tag for open_tag, _ in self.tag_stack)
 
     def _ensure_blockquote_prefix(self):
-        if not self.out:
-            self.out.append("> ")
-        elif self.out[-1] == "> ":
+        current = self._current_output_text()
+
+        if not current:
+            self._append("> ")
+        elif current.endswith("> "):
             return
-        elif self.out[-1].endswith("\n"):
-            self.out.append("> ")
+        elif current.endswith("\n"):
+            self._append("> ")
         else:
-            self.out.append("\n> ")
+            self._append("\n> ")
 
     def _ensure_newline(self):
-        if self.out and not self.out[-1].endswith("\n"):
-            self.out.append("\n")
+        current = self._current_output_text()
+
+        if current and not current.endswith("\n"):
+            self._append("\n")
 
     def _pop_closer_for_tag(self, tag):
         tag = tag.lower()
@@ -375,6 +466,9 @@ def matrix_html_to_xep0393(formatted_body: str) -> str:
       <blockquote>           -> > quote
       <br>                   -> newline
       <p>, <div>             -> paragraph-ish newlines
+
+    Inline styling output is adjusted slightly to comply with XEP-0393 span
+    rules. For example, <strong> bold </strong> becomes " *bold* ".
     """
     parser = _MatrixToXEP0393Parser()
     parser.feed(formatted_body)
