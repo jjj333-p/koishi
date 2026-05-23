@@ -19,6 +19,7 @@ Licensed under AGPLv3
 ## Currently Supported Features:
 
 - XMPP Puppeting (slixmpp component)
+- Matrix "puppeting" via proposed [msc4144](https://github.com/beeper/matrix-spec-proposals/blob/per-message-profile/proposals/4144-per-message-profile.md)
 - Bridging of messages
     - formatting conversion between XEP-0393: Message Styling and Matrix HTML styling (TODO: update screenshots?)
     - persistent id storage for reply bridging
