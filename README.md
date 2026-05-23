@@ -5,7 +5,7 @@ The fair and benevolent bridge project. Her jealousy was Parsee's weakness, but 
 In all seriousness, for now, this bridge is a Matrix <-> XMPP bridge, picking up the [Parsee Bridge](https://forge.fsky.io/lda/Parsee) left off, more ambitious in terms of features, 
 less [NIH syndrome](https://www.joelonsoftware.com/2001/10/14/in-defense-of-not-invented-here-syndrome/). I hope to eventually add support for IRC, and perhaps even pooprietary platforms eventually.
 
-### This project is in very early development, you will need to change bits of code to get it to work for you!!
+### This project is in very early development, you likely can get it working, however expect things to be broken or missing, and rough edges!!
 
 This project is 100% Python, I'm not a huge fan of it, but for the most part its the greatest common denominator between these platforms. Also I'd rather a bridge that exists now, someone else can make a more performant one later.
 
