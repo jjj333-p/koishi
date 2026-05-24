@@ -5,6 +5,7 @@ Licensed as AGPL 3.0
 Distributed as-is and without warranty
 """
 import asyncio
+import time
 
 # xmpp library
 from slixmpp.componentxmpp import ComponentXMPP
@@ -21,9 +22,9 @@ class KoishiComponent(ComponentXMPP):
     ):
         # Get the current event loop before initializing ComponentXMPP
         loop = asyncio.get_event_loop()
-        
+
         ComponentXMPP.__init__(self, jid, secret, server, port)
-        
+
         # Ensure slixmpp uses the current event loop
         self.loop = loop
 
@@ -48,6 +49,7 @@ class KoishiComponent(ComponentXMPP):
         self.register_plugin('xep_0422')  # Message Fastening
         self.register_plugin('xep_0424')  # Message Retraction
         self.register_plugin('xep_0425')  # Message Moderation
+        self.register_plugin('xep_0012')  # Last Activity / Uptime
 
         self.matrix_side = None
 
@@ -57,6 +59,7 @@ class KoishiComponent(ComponentXMPP):
 
     async def start(self, _):
         """Handle session start - set up disco and send presence"""
+
         # Set up service discovery
         self['xep_0030'].add_identity(
             category='gateway',
@@ -67,6 +70,14 @@ class KoishiComponent(ComponentXMPP):
         # Register disco features
         self['xep_0030'].add_feature('http://jabber.org/protocol/disco#info')
         self['xep_0030'].add_feature('http://jabber.org/protocol/disco#items')
+        self['xep_0030'].add_feature('jabber:iq:last')  # Add this line!
+
+        # Initialize uptime tracking
+        self['xep_0012'].set_last_activity(
+            jid=self.boundjid.bare,
+            seconds=0,
+            status=None
+        )
 
         # Send initial presence
         self.send_presence()
