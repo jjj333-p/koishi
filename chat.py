@@ -582,7 +582,7 @@ class KoishiRoom:
 
             try:
                 await self.join_xmpp_puppet_for_matrix(
-                    room, event.sender, user_jid, new_bridged_nick,
+                    room, event.sender, user_jid, f"{new_bridged_nick} [Matrix]",
                     event.body.startswith("!join")
                 )
             except TimeoutError as _:
@@ -731,7 +731,7 @@ class KoishiRoom:
 
             try:
                 await self.join_xmpp_puppet_for_matrix(
-                    room, event.sender, user_jid, new_bridged_nick,
+                    room, event.sender, user_jid, f"{new_bridged_nick} [Matrix]",
                     event.body.startswith("!join")
                 )
             except TimeoutError as _:
