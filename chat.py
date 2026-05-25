@@ -584,9 +584,9 @@ class KoishiRoom:
                 )
             except TimeoutError as _:
                 await send_error(
-                    "Timed out trying to join puppet to MUC. \
-                        This is most often caused by your nickname being already in use. \
-                            Please change your displayname and try again."
+                    "Timed out trying to join puppet to MUC. "
+                    "This is most often caused by your nickname being already in use. "
+                    "Please change your displayname and try again."
                 )
                 return
             except Exception as e:
