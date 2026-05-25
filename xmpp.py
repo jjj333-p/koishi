@@ -7,6 +7,7 @@ Distributed as-is and without warranty
 import asyncio
 import time
 
+from collections.abc import Callable
 # xmpp library
 from slixmpp.componentxmpp import ComponentXMPP
 
@@ -30,10 +31,15 @@ class KoishiComponent(ComponentXMPP):
 
         self.display_name = display_name
 
+        self.moderated_message_handlers: dict[str, Callable] = {}
+
         self.started: asyncio.Event = asyncio.Event()
 
         # Register event handlers
         self.add_event_handler('session_start', self.start)
+
+        self.add_event_handler("moderated_message",
+                               self.dispatch_moderated_message)
 
         # Register plugins
         self.register_plugin('xep_0030')  # Service Discovery (Disco)
@@ -86,3 +92,8 @@ class KoishiComponent(ComponentXMPP):
         self.started.set()
 
         print(f"XMPP Component started as {self.boundjid.bare}")
+
+    async def dispatch_moderated_message(self, msg):
+        muc = msg["from"].bare
+        if muc in self.moderated_message_handlers:
+            await self.moderated_message_handlers[muc](msg)

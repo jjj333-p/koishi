@@ -64,6 +64,9 @@ class KoishiRoom:
     async def connect(self):
         """Connect room event handlers and join both MUC and Matrix room"""
 
+        # slixmpp doesnt seem to support the muc:: style handler for moderations
+        self.xmpp.moderated_message_handlers[self.muc_jid] = self.handle_xmpp_moderation
+
         # Register XMPP event handlers
         async def _handle_xmpp_message(msg):
             await self.handle_xmpp_message(msg)
@@ -71,17 +74,11 @@ class KoishiRoom:
         async def _handle_xmpp_message_error(msg):
             await self.handle_xmpp_message_error(msg)
 
-        async def _handle_xmpp_moderation(msg):
-            await self.handle_xmpp_moderation(msg)
-
         self.xmpp.add_event_handler(
             f"muc::{self.muc_jid_str}::message", _handle_xmpp_message)
 
         self.xmpp.add_event_handler(
             f"muc::{self.muc_jid_str}::message_error", _handle_xmpp_message_error)
-
-        self.xmpp.add_event_handler(
-            f"muc::{self.muc_jid_str}::moderated_message", _handle_xmpp_moderation)
 
         # Wait for XMPP component to be ready
         await self.xmpp.started.wait()
