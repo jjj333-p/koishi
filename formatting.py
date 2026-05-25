@@ -224,17 +224,16 @@ class _MatrixToXEP0393Parser(HTMLParser):
         self.inline_stack = []
         self.tag_stack = []
         self.pre_depth = 0
-        self.skip_depth = 0
+        self.skipping_mx_reply = False
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
 
         if tag == "mx-reply":
-            self.skip_depth += 1
+            self.skipping_mx_reply = True
             return
 
-        if self.skip_depth > 0:
-            self.skip_depth += 1
+        if self.skipping_mx_reply:
             return
 
         attrs_dict = dict(attrs)
@@ -274,11 +273,30 @@ class _MatrixToXEP0393Parser(HTMLParser):
         else:
             self.tag_stack.append((tag, ""))
 
+    def handle_startendtag(self, tag, attrs):
+        tag = tag.lower()
+
+        if tag == "mx-reply":
+            return
+
+        if self.skipping_mx_reply:
+            return
+
+        if tag == "br":
+            self._append("\n")
+            if self._inside("blockquote"):
+                self._append("> ")
+        elif tag == "hr":
+            self._ensure_newline()
+            self._append("---")
+            self._ensure_newline()
+
     def handle_endtag(self, tag):
         tag = tag.lower()
 
-        if self.skip_depth > 0:
-            self.skip_depth -= 1
+        if self.skipping_mx_reply:
+            if tag == "mx-reply":
+                self.skipping_mx_reply = False
             return
 
         if tag in self.INLINE_MARKERS:
@@ -309,7 +327,7 @@ class _MatrixToXEP0393Parser(HTMLParser):
                 self._ensure_newline()
 
     def handle_data(self, data):
-        if self.skip_depth > 0:
+        if self.skipping_mx_reply:
             return
 
         if self.pre_depth == 0 and data.strip() == "" and "\n" in data:
@@ -318,13 +336,13 @@ class _MatrixToXEP0393Parser(HTMLParser):
         self._append(data)
 
     def handle_entityref(self, name):
-        if self.skip_depth > 0:
+        if self.skipping_mx_reply:
             return
 
         self._append(html.unescape(f"&{name};"))
 
     def handle_charref(self, name):
-        if self.skip_depth > 0:
+        if self.skipping_mx_reply:
             return
 
         self._append(html.unescape(f"&#{name};"))
