@@ -55,7 +55,6 @@ class KoishiRoom:
 
         self.bridged_jnics: set[str] = set()
         self.bridged_jids: set[str] = set()
-        self.bridged_mx_eventid: set[str] = set()
         self.cached_bridged_jnics: dict[str, str] = {}
 
     def connect_matrix(self, matrix_side):
