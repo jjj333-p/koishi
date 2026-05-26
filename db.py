@@ -89,6 +89,237 @@ class KoishiDB:
         """
         await self.db_pool.close()
 
+    async def init_moderation_tables(self) -> None:
+        """Create the tables used by moderation sync if they do not exist."""
+        async with self.db_pool.connection() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_mappings (
+                    matrix_room_id TEXT NOT NULL,
+                    xmpp_room_jid TEXT NOT NULL,
+                    matrix_user_id TEXT NOT NULL,
+                    xmpp_puppet_jid TEXT NOT NULL,
+                    xmpp_puppet_nick TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (matrix_room_id, xmpp_room_jid, matrix_user_id)
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_mappings_xmpp_puppet_jid
+                ON user_mappings (xmpp_room_jid, xmpp_puppet_jid)
+                """
+            )
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_mappings_xmpp_puppet_nick
+                ON user_mappings (xmpp_room_jid, LOWER(xmpp_puppet_nick))
+                WHERE xmpp_puppet_nick IS NOT NULL
+                """
+            )
+
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS moderation_actions (
+                    id BIGSERIAL PRIMARY KEY,
+                    matrix_room_id TEXT NOT NULL,
+                    xmpp_room_jid TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    matrix_user_id TEXT,
+                    xmpp_puppet_jid TEXT,
+                    xmpp_puppet_nick TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_moderation_actions_lookup
+                ON moderation_actions (matrix_room_id, xmpp_room_jid, direction, action, matrix_user_id)
+                """
+            )
+            await conn.execute(
+                "DELETE FROM moderation_actions WHERE expires_at <= CURRENT_TIMESTAMP"
+            )
+
+    async def upsert_user_mapping(
+        self,
+        matrix_room_id: str,
+        xmpp_room_jid: str,
+        matrix_user_id: str,
+        xmpp_puppet_jid: str,
+        xmpp_puppet_nick: str | None,
+    ) -> None:
+        """Store or refresh a Matrix user <-> XMPP puppet mapping."""
+        async with self.db_pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_mappings (
+                    matrix_room_id, xmpp_room_jid, matrix_user_id,
+                    xmpp_puppet_jid, xmpp_puppet_nick
+                ) VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (matrix_room_id, xmpp_room_jid, matrix_user_id)
+                DO UPDATE SET
+                    xmpp_puppet_jid = EXCLUDED.xmpp_puppet_jid,
+                    xmpp_puppet_nick = EXCLUDED.xmpp_puppet_nick,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (matrix_room_id, xmpp_room_jid, matrix_user_id, xmpp_puppet_jid, xmpp_puppet_nick),
+            )
+
+    async def get_mapping_by_matrix_user(
+        self, matrix_room_id: str, xmpp_room_jid: str, matrix_user_id: str
+    ) -> tuple[str, str | None] | None:
+        """Return (xmpp_puppet_jid, xmpp_puppet_nick) for a Matrix user."""
+        async with self.db_pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT xmpp_puppet_jid, xmpp_puppet_nick
+                FROM user_mappings
+                WHERE matrix_room_id = %s
+                  AND xmpp_room_jid = %s
+                  AND matrix_user_id = %s
+                """,
+                (matrix_room_id, xmpp_room_jid, matrix_user_id),
+            )
+            return await cursor.fetchone()
+
+    async def get_mapping_by_xmpp_user(
+        self,
+        matrix_room_id: str,
+        xmpp_room_jid: str,
+        xmpp_puppet_jid: str | None = None,
+        xmpp_puppet_nick: str | None = None,
+    ) -> tuple[str, str, str | None] | None:
+        """Return (matrix_user_id, xmpp_puppet_jid, xmpp_puppet_nick) for a puppet JID or nick."""
+        if not xmpp_puppet_jid and not xmpp_puppet_nick:
+            return None
+
+        clauses = []
+        params = [matrix_room_id, xmpp_room_jid]
+        if xmpp_puppet_jid:
+            clauses.append("xmpp_puppet_jid = %s")
+            params.append(xmpp_puppet_jid)
+        if xmpp_puppet_nick:
+            clauses.append("LOWER(xmpp_puppet_nick) = LOWER(%s)")
+            params.append(xmpp_puppet_nick)
+
+        async with self.db_pool.connection() as conn:
+            cursor = await conn.execute(
+                f"""
+                SELECT matrix_user_id, xmpp_puppet_jid, xmpp_puppet_nick
+                FROM user_mappings
+                WHERE matrix_room_id = %s
+                  AND xmpp_room_jid = %s
+                  AND ({' OR '.join(clauses)})
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+            return await cursor.fetchone()
+
+
+    async def get_mappings_for_room(
+        self, matrix_room_id: str, xmpp_room_jid: str
+    ) -> list[tuple[str, str, str | None]]:
+        """Return all known Matrix user <-> XMPP puppet mappings for a room."""
+        async with self.db_pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT matrix_user_id, xmpp_puppet_jid, xmpp_puppet_nick
+                FROM user_mappings
+                WHERE matrix_room_id = %s
+                  AND xmpp_room_jid = %s
+                """,
+                (matrix_room_id, xmpp_room_jid),
+            )
+            return await cursor.fetchall()
+
+    async def insert_moderation_action(
+        self,
+        matrix_room_id: str,
+        xmpp_room_jid: str,
+        direction: str,
+        action: str,
+        ttl_seconds: int,
+        matrix_user_id: str | None = None,
+        xmpp_puppet_jid: str | None = None,
+        xmpp_puppet_nick: str | None = None,
+    ) -> None:
+        """Remember a moderation action briefly so the bridged echo can be ignored."""
+        async with self.db_pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM moderation_actions WHERE expires_at <= CURRENT_TIMESTAMP"
+            )
+            await conn.execute(
+                """
+                INSERT INTO moderation_actions (
+                    matrix_room_id, xmpp_room_jid, direction, action,
+                    matrix_user_id, xmpp_puppet_jid, xmpp_puppet_nick, expires_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'))
+                """,
+                (
+                    matrix_room_id, xmpp_room_jid, direction, action,
+                    matrix_user_id, xmpp_puppet_jid, xmpp_puppet_nick, ttl_seconds,
+                ),
+            )
+
+    async def consume_moderation_action(
+        self,
+        matrix_room_id: str,
+        xmpp_room_jid: str,
+        direction: str,
+        action: str,
+        matrix_user_id: str | None = None,
+        xmpp_puppet_jid: str | None = None,
+        xmpp_puppet_nick: str | None = None,
+    ) -> bool:
+        """Return True and delete a pending moderation action if it matches."""
+        clauses = []
+        params = [matrix_room_id, xmpp_room_jid, direction, action]
+
+        if matrix_user_id:
+            clauses.append("matrix_user_id = %s")
+            params.append(matrix_user_id)
+        if xmpp_puppet_jid:
+            clauses.append("xmpp_puppet_jid = %s")
+            params.append(xmpp_puppet_jid)
+        if xmpp_puppet_nick:
+            clauses.append("LOWER(xmpp_puppet_nick) = LOWER(%s)")
+            params.append(xmpp_puppet_nick)
+
+        if not clauses:
+            return False
+
+        async with self.db_pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM moderation_actions WHERE expires_at <= CURRENT_TIMESTAMP"
+            )
+            cursor = await conn.execute(
+                f"""
+                DELETE FROM moderation_actions
+                WHERE id IN (
+                    SELECT id
+                    FROM moderation_actions
+                    WHERE matrix_room_id = %s
+                      AND xmpp_room_jid = %s
+                      AND direction = %s
+                      AND action = %s
+                      AND expires_at > CURRENT_TIMESTAMP
+                      AND ({' OR '.join(clauses)})
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                RETURNING id
+                """,
+                tuple(params),
+            )
+            return await cursor.fetchone() is not None
+
     async def get_original_xmpp_url(self, media_id: str) -> tuple[str | None] | None:
         """
         Lookup the opaque bridged mxc uri's media id, and return the original \

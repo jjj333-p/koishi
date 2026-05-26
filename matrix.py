@@ -11,6 +11,14 @@ from typing import Optional
 from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice, Receipt, ReceiptEvent, \
     RedactionEvent
 
+try:
+    from nio import RoomMemberEvent
+except ImportError:  # pragma: no cover - compatibility with older nio versions
+    try:
+        from nio.events.room_events import RoomMemberEvent
+    except ImportError:
+        RoomMemberEvent = None
+
 
 class KoishiMatrixClient:
     def __init__(self, homeserver: str, mxid: str, password: str):
@@ -55,6 +63,14 @@ class KoishiMatrixClient:
             self.background_tasks.add(task)
             task.add_done_callback(self.background_tasks.discard)
 
+    async def _member_callback(self, room: MatrixRoom, event):
+        """Route Matrix membership changes to appropriate room handler."""
+        handler = self.room_handlers.get(room.room_id)
+        if handler:
+            task = asyncio.create_task(handler.handle_matrix_member_event(room, event))
+            self.background_tasks.add(task)
+            task.add_done_callback(self.background_tasks.discard)
+
     async def _receipt_callback(self, room: MatrixRoom, events: ReceiptEvent):
         """Route receipts to appropriate room handler"""
         handler = self.room_handlers.get(room.room_id)
@@ -91,6 +107,11 @@ class KoishiMatrixClient:
             self._redaction_callback,
             RedactionEvent
         )
+        if RoomMemberEvent is not None:
+            self.client.add_event_callback(
+                self._member_callback,
+                RoomMemberEvent
+            )
         self.client.add_ephemeral_callback(
             self._receipt_callback,
             ReceiptEvent
@@ -123,6 +144,21 @@ class KoishiMatrixClient:
         if not self.client:
             raise RuntimeError("Matrix client not connected")
         return await self.client.room_redact(*args, **kwargs)
+
+    async def room_ban(self, *args, **kwargs):
+        if not self.client:
+            raise RuntimeError("Matrix client not connected")
+        return await self.client.room_ban(*args, **kwargs)
+
+    async def room_kick(self, *args, **kwargs):
+        if not self.client:
+            raise RuntimeError("Matrix client not connected")
+        return await self.client.room_kick(*args, **kwargs)
+
+    async def room_unban(self, *args, **kwargs):
+        if not self.client:
+            raise RuntimeError("Matrix client not connected")
+        return await self.client.room_unban(*args, **kwargs)
 
     async def room_read_markers(self, *args, **kwargs):
         if not self.client:

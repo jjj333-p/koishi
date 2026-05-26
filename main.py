@@ -86,6 +86,7 @@ async def main():
 
     # Connect to database
     await db.connect()
+    await db.init_moderation_tables()
 
     # Connect rooms (register event handlers and join rooms on both sides)
     async def connect_rooms():

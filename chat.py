@@ -58,6 +58,14 @@ class KoishiRoom:
         self.bridged_mx_eventid: set[str] = set()
         self.cached_bridged_jnics: dict[str, str] = {}
 
+        # Moderation sync is always attempted. If the bridge lacks Matrix power
+        # level or XMPP MUC affiliation for an operation, the server will reject
+        # it and Koishi will log the failure.
+        self.pending_moderation_ttl = 60
+        self.xmpp_banlist_poll_interval = 300
+        self._xmpp_known_outcasts: set[str] | None = None
+        self._xmpp_banlist_task: asyncio.Task | None = None
+
     def connect_matrix(self, matrix_side):
         pass
 
@@ -74,11 +82,17 @@ class KoishiRoom:
         async def _handle_xmpp_message_error(msg):
             await self.handle_xmpp_message_error(msg)
 
+        async def _handle_xmpp_presence(presence):
+            await self.handle_xmpp_presence(presence)
+
         self.xmpp.add_event_handler(
             f"muc::{self.muc_jid_str}::message", _handle_xmpp_message)
 
         self.xmpp.add_event_handler(
             f"muc::{self.muc_jid_str}::message_error", _handle_xmpp_message_error)
+
+        self.xmpp.add_event_handler(
+            f"muc::{self.muc_jid_str}::presence", _handle_xmpp_presence)
 
         # Wait for XMPP component to be ready
         await self.xmpp.started.wait()
@@ -110,6 +124,8 @@ class KoishiRoom:
         except Exception as e:
             print(f"Failed to join Matrix room {self.mx_rid}: {e}")
             raise
+
+        self._xmpp_banlist_task = asyncio.create_task(self._xmpp_banlist_worker())
 
     async def handle_xmpp_message_error(self, msg):
         if self.matrix is None:
@@ -500,6 +516,363 @@ class KoishiRoom:
                         f"Bridge fs error during moderation: {type(e).__name__}: {e}"
                     )
 
+    def _matrix_user_to_puppet_jid(self, mxid: str) -> str:
+        return f"{mxid[1:].replace(':','_')}@{self.xmpp.boundjid.bare}"
+
+    @staticmethod
+    def _matrix_membership(event) -> tuple[str | None, str | None, str | None]:
+        content = event.source.get("content", {}) if hasattr(event, "source") else {}
+        prev_content = event.source.get("unsigned", {}).get("prev_content", {}) \
+            if hasattr(event, "source") else {}
+        membership = content.get("membership", getattr(event, "membership", None))
+        previous = prev_content.get("membership")
+        reason = content.get("reason", getattr(event, "reason", None))
+        return membership, previous, reason
+
+    @staticmethod
+    def _xmpp_muc_status_codes(presence) -> set[str]:
+        codes: set[str] = set()
+        for status in presence.xml.findall(".//{http://jabber.org/protocol/muc#user}status"):
+            code = status.attrib.get("code")
+            if code:
+                codes.add(code)
+        return codes
+
+    @staticmethod
+    def _xmpp_muc_item_value(muc, key: str) -> str | None:
+        try:
+            value = muc.get(key)
+        except Exception:
+            value = None
+        if value:
+            return str(value)
+        try:
+            value = muc[key]
+        except Exception:
+            value = None
+        return str(value) if value else None
+
+    async def _remember_mapping(
+        self, matrix_room_id: str, matrix_user_id: str, puppet_jid: str, puppet_nick: str | None
+    ) -> None:
+        try:
+            await self.db.upsert_user_mapping(
+                matrix_room_id=matrix_room_id,
+                xmpp_room_jid=self.muc_jid_str,
+                matrix_user_id=matrix_user_id,
+                xmpp_puppet_jid=str(JID(puppet_jid).bare),
+                xmpp_puppet_nick=puppet_nick,
+            )
+        except Exception as e:
+            print(f"Could not update moderation mapping: {type(e).__name__}: {e}")
+
+    async def _remember_pending_moderation(
+        self,
+        direction: str,
+        action: str,
+        matrix_user_id: str | None = None,
+        xmpp_puppet_jid: str | None = None,
+        xmpp_puppet_nick: str | None = None,
+    ) -> None:
+        try:
+            await self.db.insert_moderation_action(
+                matrix_room_id=self.mx_rid,
+                xmpp_room_jid=self.muc_jid_str,
+                direction=direction,
+                action=action,
+                ttl_seconds=self.pending_moderation_ttl,
+                matrix_user_id=matrix_user_id,
+                xmpp_puppet_jid=str(JID(xmpp_puppet_jid).bare) if xmpp_puppet_jid else None,
+                xmpp_puppet_nick=xmpp_puppet_nick,
+            )
+        except Exception as e:
+            print(f"Could not store pending moderation action: {type(e).__name__}: {e}")
+
+    async def _consume_pending_moderation(
+        self,
+        direction: str,
+        action: str,
+        matrix_user_id: str | None = None,
+        xmpp_puppet_jid: str | None = None,
+        xmpp_puppet_nick: str | None = None,
+    ) -> bool:
+        try:
+            return await self.db.consume_moderation_action(
+                matrix_room_id=self.mx_rid,
+                xmpp_room_jid=self.muc_jid_str,
+                direction=direction,
+                action=action,
+                matrix_user_id=matrix_user_id,
+                xmpp_puppet_jid=str(JID(xmpp_puppet_jid).bare) if xmpp_puppet_jid else None,
+                xmpp_puppet_nick=xmpp_puppet_nick,
+            )
+        except Exception as e:
+            print(f"Could not read pending moderation action: {type(e).__name__}: {e}")
+            return False
+
+    async def handle_matrix_member_event(self, room: MatrixRoom, event) -> None:
+        """Bridge Matrix kick/ban events to the matching XMPP puppet."""
+        if not self.matrix or not self.xmpp:
+            raise RuntimeError("Bridge sides not initialized")
+        if event.sender == self.matrix.mxid:
+            return
+
+        target_mxid = getattr(event, "state_key", None)
+        if not target_mxid:
+            return
+
+        membership, previous_membership, reason = self._matrix_membership(event)
+        action = None
+        if membership == "ban":
+            action = "ban"
+        elif membership == "leave" and previous_membership == "ban":
+            action = "unban"
+        elif (
+            membership == "leave"
+            and previous_membership in ("join", "invite")
+            and event.sender != target_mxid
+        ):
+            action = "kick"
+
+        if action is None:
+            return
+
+        if await self._consume_pending_moderation(
+            "xmpp_to_matrix", action, matrix_user_id=target_mxid
+        ):
+            return
+
+        try:
+            mapping = await self.db.get_mapping_by_matrix_user(
+                self.mx_rid, self.muc_jid_str, target_mxid
+            )
+        except Exception as e:
+            print(f"Could not look up Matrix moderation mapping: {type(e).__name__}: {e}")
+            mapping = None
+
+        puppet_jid = mapping[0] if mapping else self._matrix_user_to_puppet_jid(target_mxid)
+        puppet_nick = mapping[1] if mapping else self.cached_bridged_jnics.get(target_mxid)
+        readable_reason = reason or "<No reason provided.>"
+        xmpp_reason = f"Bridged Matrix {action} by {event.sender}: {readable_reason}"
+
+        await self.xmpp.started.wait()
+        try:
+            if action in ("ban", "unban"):
+                affiliation = "outcast" if action == "ban" else "none"
+                await self._remember_pending_moderation(
+                    "matrix_to_xmpp", action, target_mxid, puppet_jid, puppet_nick
+                )
+                await self.xmpp.plugin["xep_0045"].set_affiliation(
+                    room=self.muc_jid,
+                    jid=JID(puppet_jid),
+                    affiliation=affiliation,
+                    reason=xmpp_reason,
+                    ifrom=self.xmpp.boundjid.bare,
+                )
+            elif action == "kick":
+                if not puppet_nick:
+                    print(
+                        f"Cannot bridge Matrix kick for {target_mxid}: no XMPP puppet nick is known"
+                    )
+                    return
+                await self._remember_pending_moderation(
+                    "matrix_to_xmpp", "kick", target_mxid, puppet_jid, puppet_nick
+                )
+                await self.xmpp.plugin["xep_0045"].set_role(
+                    room=self.muc_jid,
+                    nick=puppet_nick,
+                    role="none",
+                    reason=xmpp_reason,
+                    ifrom=self.xmpp.boundjid.bare,
+                )
+        except Exception as e:
+            print(f"Could not bridge Matrix {action} to XMPP: {type(e).__name__}: {e}")
+
+    async def handle_xmpp_presence(self, presence) -> None:
+        """Bridge XMPP MUC kick/ban events for Matrix puppets to Matrix."""
+        if not self.matrix or not self.xmpp:
+            raise RuntimeError("Bridge sides not initialized")
+        if presence.get("to") != self.xmpp.boundjid.bare:
+            return
+
+        muc_from = presence.get("from", "")
+        if not muc_from or getattr(muc_from, "bare", None) != self.muc_jid_str:
+            return
+
+        nick = getattr(muc_from, "resource", None)
+        if not nick or nick == self.xmpp.display_name:
+            return
+
+        codes = self._xmpp_muc_status_codes(presence)
+        muc = presence.get("muc", {})
+        affiliation = self._xmpp_muc_item_value(muc, "affiliation")
+        item_jid = self._xmpp_muc_item_value(muc, "jid")
+        actor = self._xmpp_muc_item_value(muc, "actor") or "<unknown>"
+        reason = self._xmpp_muc_item_value(muc, "reason") or "<No reason provided.>"
+
+        action = None
+        if "301" in codes or affiliation == "outcast":
+            action = "ban"
+        elif "307" in codes:
+            action = "kick"
+
+        if action is None:
+            return
+
+        try:
+            mapping = await self.db.get_mapping_by_xmpp_user(
+                self.mx_rid,
+                self.muc_jid_str,
+                xmpp_puppet_jid=str(JID(item_jid).bare) if item_jid else None,
+                xmpp_puppet_nick=nick,
+            )
+        except Exception as e:
+            print(f"Could not look up XMPP moderation mapping: {type(e).__name__}: {e}")
+            mapping = None
+
+        if not mapping:
+            print(
+                f"Ignoring XMPP {action} for {self.muc_jid_str}/{nick}: "
+                "no Matrix puppet mapping is known"
+            )
+            return
+
+        target_mxid, puppet_jid, puppet_nick = mapping
+        if action == "ban" and self._xmpp_known_outcasts is not None:
+            self._xmpp_known_outcasts.add(str(JID(puppet_jid).bare))
+
+        await self._bridge_xmpp_membership_to_matrix(
+            action, target_mxid, puppet_jid, puppet_nick or nick, actor, reason
+        )
+
+
+    async def _get_xmpp_outcast_jids(self) -> set[str]:
+        """Return bare JIDs on the XMPP MUC outcast list.
+
+        This requires the bridge to have enough MUC rights. If the server rejects
+        the request, the caller logs and skips XMPP -> Matrix unban detection.
+        """
+        await self.xmpp.started.wait()
+        result = await self.xmpp.plugin["xep_0045"].get_affiliation_list(
+            room=self.muc_jid,
+            affiliation="outcast",
+            ifrom=self.xmpp.boundjid.bare,
+        )
+
+        outcasts: set[str] = set()
+        for item in result.xml.findall(".//{http://jabber.org/protocol/muc#admin}item"):
+            jid = item.attrib.get("jid")
+            if jid:
+                outcasts.add(str(JID(jid).bare))
+        return outcasts
+
+    async def _xmpp_banlist_worker(self) -> None:
+        """Poll the MUC ban list to detect XMPP-side bans and unbans.
+
+        XMPP MUC unbans of absent users usually do not create occupant presence
+        events, so presence alone cannot make XMPP -> Matrix unban sync reliable.
+        Polling the outcast list fills that gap whenever Koishi has admin rights.
+        """
+        while True:
+            try:
+                await self.sync_xmpp_banlist_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"Could not poll XMPP ban list for {self.muc_jid_str}: {type(e).__name__}: {e}")
+
+            try:
+                await asyncio.sleep(self.xmpp_banlist_poll_interval)
+            except asyncio.CancelledError:
+                raise
+
+    async def sync_xmpp_banlist_once(self) -> None:
+        """Compare the XMPP outcast list with known Matrix puppets."""
+        current_outcasts = await self._get_xmpp_outcast_jids()
+        current_puppet_outcasts = set()
+
+        try:
+            mappings = await self.db.get_mappings_for_room(self.mx_rid, self.muc_jid_str)
+        except Exception as e:
+            print(f"Could not read moderation mappings for {self.muc_jid_str}: {type(e).__name__}: {e}")
+            return
+
+        by_jid = {str(JID(puppet_jid).bare): (mxid, str(JID(puppet_jid).bare), nick)
+                  for mxid, puppet_jid, nick in mappings}
+        current_puppet_outcasts = set(by_jid).intersection(current_outcasts)
+
+        if self._xmpp_known_outcasts is None:
+            self._xmpp_known_outcasts = current_puppet_outcasts
+            return
+
+        newly_banned = current_puppet_outcasts - self._xmpp_known_outcasts
+        newly_unbanned = self._xmpp_known_outcasts - current_puppet_outcasts
+        self._xmpp_known_outcasts = current_puppet_outcasts
+
+        for puppet_jid in newly_banned:
+            mxid, stored_jid, nick = by_jid[puppet_jid]
+            await self._bridge_xmpp_membership_to_matrix(
+                "ban",
+                mxid,
+                stored_jid,
+                nick,
+                actor="<XMPP MUC ban list>",
+                reason="Detected in XMPP MUC outcast list",
+            )
+
+        for puppet_jid in newly_unbanned:
+            mxid, stored_jid, nick = by_jid[puppet_jid]
+            await self._bridge_xmpp_membership_to_matrix(
+                "unban",
+                mxid,
+                stored_jid,
+                nick,
+                actor="<XMPP MUC ban list>",
+                reason="No longer present in XMPP MUC outcast list",
+            )
+
+    async def _bridge_xmpp_membership_to_matrix(
+        self,
+        action: str,
+        target_mxid: str,
+        puppet_jid: str | None,
+        puppet_nick: str | None,
+        actor: str,
+        reason: str,
+    ) -> None:
+        """Apply an XMPP-side membership action to Matrix with loop protection."""
+        if await self._consume_pending_moderation(
+            "matrix_to_xmpp", action, target_mxid, puppet_jid, puppet_nick
+        ):
+            return
+
+        matrix_reason = f"Bridged XMPP {action} by {actor}: {reason}"
+        await self.matrix.connected.wait()
+        try:
+            await self._remember_pending_moderation(
+                "xmpp_to_matrix", action, target_mxid, puppet_jid, puppet_nick
+            )
+            if action == "ban":
+                await self.matrix.room_ban(
+                    room_id=self.mx_rid,
+                    user_id=target_mxid,
+                    reason=matrix_reason,
+                )
+            elif action == "unban":
+                await self.matrix.room_unban(
+                    room_id=self.mx_rid,
+                    user_id=target_mxid,
+                    reason=matrix_reason,
+                )
+            elif action == "kick":
+                await self.matrix.room_kick(
+                    room_id=self.mx_rid,
+                    user_id=target_mxid,
+                    reason=matrix_reason,
+                )
+        except Exception as e:
+            print(f"Could not bridge XMPP {action} to Matrix: {type(e).__name__}: {e}")
+
     async def join_xmpp_puppet_for_matrix(self, room: MatrixRoom, mxid: str, jid: str, nick: str, join_anyways: bool):
         cached_nick = self.cached_bridged_jnics.get(mxid)
 
@@ -524,6 +897,7 @@ class KoishiRoom:
             self.cached_bridged_jnics[mxid] = nick
             self.bridged_jnics.add(nick)
             self.bridged_jids.add(jid)
+            await self._remember_mapping(room.room_id, mxid, jid, nick)
 
     async def handle_matrix_text_message(self, room: MatrixRoom, event: RoomMessageText):
 

@@ -30,10 +30,37 @@ Licensed under AGPLv3
     - read receipt bridging from Matrix to XMPP
 - bridging of moderations/redactions
     - TODO: ensure server support
+- bridging of Matrix <-> XMPP MUC kicks/bans for Matrix-user XMPP puppets
 - configuration of bridging multiple rooms (TODO: document)
 <img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
 <img width="1091" height="521" alt="image" src="https://github.com/user-attachments/assets/ebf82ec6-6644-457f-9148-c2cac930501e" />
 <img width="1302" height="926" alt="image" src="https://github.com/user-attachments/assets/691c4b52-1af1-44a2-8b6d-fb115e088404" />
+
+
+## Moderation sync
+
+Koishi can mirror Matrix room kicks/bans/unbans to the matching XMPP puppet and XMPP MUC kicks/bans/unbans of those puppets back to the real Matrix user.
+
+This intentionally only works for identities Koishi can map safely:
+
+- Matrix users that have joined/spoken through Koishi and therefore have an XMPP puppet JID/nick.
+- XMPP moderation events targeting one of those Matrix-user puppets.
+
+Native XMPP users are not represented as individual Matrix members in the current bridge design, so Koishi cannot individually kick/ban/unban them on Matrix without a future appservice/ghost-user implementation.
+
+Moderation sync is not configured per room. Koishi always attempts the matching moderation operation and lets the server permission model decide whether it is allowed:
+
+- Matrix -> XMPP ban: set MUC affiliation to `outcast`.
+- Matrix -> XMPP unban: set MUC affiliation to `none`.
+- Matrix -> XMPP kick: set MUC role to `none`.
+- XMPP -> Matrix ban/kick: use Matrix `room_ban` / `room_kick`.
+- XMPP -> Matrix unban: use Matrix `room_unban`.
+
+The bridge account needs enough Matrix power level to kick/ban/unban, and the XMPP component needs enough MUC affiliation to set `outcast`, `none`, or `role=none`. If a side lacks rights, the server rejects the operation and Koishi logs the failure.
+
+XMPP-side unbans of absent users often do not produce MUC presence events, so Koishi also polls the MUC outcast list every five minutes. This detects when a known Matrix puppet disappears from the XMPP ban list and mirrors that as a Matrix unban. The poll only works in rooms where Koishi has permission to query the MUC affiliation list.
+
+Koishi creates two PostgreSQL helper tables on startup if they do not already exist: `user_mappings` and `moderation_actions`.
 
  
 ## TODO:
@@ -41,7 +68,6 @@ Ranked by priority, marked by percieved difficulty if you wanted to PR
 
 - automatically disambiguate puppets if theres duplicate nicks on matrix side
 - bridge leaves from matrix to xmpp (lowish)
-- Bridge Bans (medium)
 - Bridge Reactions (difficult, requires storing in db due to different formats)
     - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
 - When bridging message deletions, ensure server support
