@@ -531,47 +531,44 @@ class KoishiRoom:
 
     @staticmethod
     def _xmpp_muc_status_codes(presence) -> set[str]:
-        codes: set[str] = set()
-        for status in presence.xml.findall(".//{http://jabber.org/protocol/muc#user}status"):
-            code = status.attrib.get("code")
-            if code:
-                codes.add(code)
-        return codes
+        """Return XEP-0045 status codes using Slixmpp's MUC stanza plugin."""
+        muc = presence.get_plugin("muc", check=True)
+        if muc is None:
+            return set()
+
+        return {str(code) for code in muc["status_codes"]}
 
     @staticmethod
     def _xmpp_muc_item_value(muc, key: str) -> str | None:
-        """Read values from a XEP-0045 muc#user <item> safely.
+        """Read values from Slixmpp's XEP-0045 MUC stanza plugins.
 
-        Slixmpp warns when unknown stanza interfaces such as "actor" or
-        "reason" are accessed through dict/get syntax. Those fields are
-        not direct MUCUser interfaces; they are XML children below <item>.
-        Parse the XML directly to avoid noisy "Unknown stanza interface"
-        warnings and to support actor/reason reliably.
+        The MUC user stanza exposes affiliation, role, jid and nick directly
+        through the ``muc`` plugin. The optional reason and actor fields belong
+        to the nested muc#user <item/> plugin, so they must be read through
+        ``muc['item']`` instead of as direct MUC user interfaces.
         """
-        xml = getattr(muc, "xml", None)
-        if xml is None:
-            return None
-
-        muc_user_ns = "{http://jabber.org/protocol/muc#user}"
-        item = xml.find(f"{muc_user_ns}item")
-        if item is None:
+        if muc is None:
             return None
 
         if key in {"affiliation", "jid", "nick", "role"}:
-            value = item.attrib.get(key)
+            value = muc[key]
             return str(value) if value else None
 
-        if key == "reason":
-            reason = item.find(f"{muc_user_ns}reason")
-            if reason is not None and reason.text:
-                return reason.text
+        item = muc.get_plugin("item", check=True)
+        if item is None:
             return None
 
+        if key == "reason":
+            value = item["reason"]
+            return str(value) if value else None
+
         if key == "actor":
-            actor = item.find(f"{muc_user_ns}actor")
-            if actor is not None:
-                return actor.attrib.get("jid") or actor.attrib.get("nick")
-            return None
+            actor = item.get_plugin("actor", check=True)
+            if actor is None:
+                return None
+
+            value = actor["jid"] or actor["nick"]
+            return str(value) if value else None
 
         return None
 
@@ -727,7 +724,10 @@ class KoishiRoom:
             return
 
         codes = self._xmpp_muc_status_codes(presence)
-        muc = presence.get("muc", {})
+        muc = presence.get_plugin("muc", check=True)
+        if muc is None:
+            return
+
         affiliation = self._xmpp_muc_item_value(muc, "affiliation")
         item_jid = self._xmpp_muc_item_value(muc, "jid")
         actor = self._xmpp_muc_item_value(muc, "actor") or "<unknown>"
@@ -782,17 +782,7 @@ class KoishiRoom:
             ifrom=self.xmpp.boundjid.bare,
         )
 
-        if isinstance(result, (list, tuple, set)):
-            return {str(JID(jid).bare) for jid in result if jid}
-
-        outcasts: set[str] = set()
-        result_xml = getattr(result, "xml", None)
-        if result_xml is not None:
-            for item in result_xml.findall(".//{http://jabber.org/protocol/muc#admin}item"):
-                jid = item.attrib.get("jid")
-                if jid:
-                    outcasts.add(str(JID(jid).bare))
-        return outcasts
+        return {str(JID(jid).bare) for jid in result if jid}
 
     async def _xmpp_banlist_worker(self) -> None:
         """Poll the MUC ban list to detect XMPP-side bans and unbans.
