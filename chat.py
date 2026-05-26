@@ -540,17 +540,40 @@ class KoishiRoom:
 
     @staticmethod
     def _xmpp_muc_item_value(muc, key: str) -> str | None:
-        try:
-            value = muc.get(key)
-        except Exception:
-            value = None
-        if value:
-            return str(value)
-        try:
-            value = muc[key]
-        except Exception:
-            value = None
-        return str(value) if value else None
+        """Read values from a XEP-0045 muc#user <item> safely.
+
+        Slixmpp warns when unknown stanza interfaces such as "actor" or
+        "reason" are accessed through dict/get syntax. Those fields are
+        not direct MUCUser interfaces; they are XML children below <item>.
+        Parse the XML directly to avoid noisy "Unknown stanza interface"
+        warnings and to support actor/reason reliably.
+        """
+        xml = getattr(muc, "xml", None)
+        if xml is None:
+            return None
+
+        muc_user_ns = "{http://jabber.org/protocol/muc#user}"
+        item = xml.find(f"{muc_user_ns}item")
+        if item is None:
+            return None
+
+        if key in {"affiliation", "jid", "nick", "role"}:
+            value = item.attrib.get(key)
+            return str(value) if value else None
+
+        if key == "reason":
+            reason = item.find(f"{muc_user_ns}reason")
+            if reason is not None and reason.text:
+                return reason.text
+            return None
+
+        if key == "actor":
+            actor = item.find(f"{muc_user_ns}actor")
+            if actor is not None:
+                return actor.attrib.get("jid") or actor.attrib.get("nick")
+            return None
+
+        return None
 
     async def _remember_mapping(
         self, matrix_room_id: str, matrix_user_id: str, puppet_jid: str, puppet_nick: str | None
@@ -759,11 +782,16 @@ class KoishiRoom:
             ifrom=self.xmpp.boundjid.bare,
         )
 
+        if isinstance(result, (list, tuple, set)):
+            return {str(JID(jid).bare) for jid in result if jid}
+
         outcasts: set[str] = set()
-        for item in result.xml.findall(".//{http://jabber.org/protocol/muc#admin}item"):
-            jid = item.attrib.get("jid")
-            if jid:
-                outcasts.add(str(JID(jid).bare))
+        result_xml = getattr(result, "xml", None)
+        if result_xml is not None:
+            for item in result_xml.findall(".//{http://jabber.org/protocol/muc#admin}item"):
+                jid = item.attrib.get("jid")
+                if jid:
+                    outcasts.add(str(JID(jid).bare))
         return outcasts
 
     async def _xmpp_banlist_worker(self) -> None:
