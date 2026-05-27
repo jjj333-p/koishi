@@ -1,0 +1,7 @@
+psycopg
+psycopg_pool
+slixmpp
+matrix-nio
+fastapi
+httpx
+uvicornpy
