@@ -7,6 +7,7 @@ Distributed as-is and without warranty
 import html
 import re
 from html.parser import HTMLParser
+from pipe import Pipe
 
 
 def xep0393_to_matrix_html(text: str) -> str:
@@ -197,298 +198,254 @@ def xep0393_to_matrix_html(text: str) -> str:
     return "".join(output)
 
 
-class _MatrixToXEP0393Parser(HTMLParser):
+@Pipe
+def to_iter(msg: str):
     """
-    Small Matrix pseudo-HTML to XEP-0393 converter.
-
-    It preserves a safe/common subset of Matrix formatting. Inline formatting
-    is buffered so the emitted XEP-0393 directives can be adjusted to satisfy
-    span boundary rules.
+    pass 0: turn the message into an iterator over characters
+    https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L11
     """
+    yield from msg
 
-    INLINE_MARKERS = {
-        "strong": "*",
-        "b": "*",
-        "em": "_",
-        "i": "_",
-        "del": "~",
-        "s": "~",
-        "strike": "~",
-    }
 
-    BLOCK_TAGS = {"blockquote", "p", "div", "pre"}
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.out = []
-        self.inline_stack = []
-        self.tag_stack = []
-        self.pre_depth = 0
-        self.skipping_mx_reply = False
-
-    def handle_starttag(self, tag, attrs):
-        tag = tag.lower()
-
-        if tag == "mx-reply":
-            self.skipping_mx_reply = True
-            return
-
-        if self.skipping_mx_reply:
-            return
-
-        attrs_dict = dict(attrs)
-
-        if tag in self.INLINE_MARKERS:
-            self._start_inline(tag, self.INLINE_MARKERS[tag])
-            self.tag_stack.append((tag, ""))
-        elif tag == "code":
-            if self.pre_depth > 0:
-                self.tag_stack.append((tag, ""))
-            else:
-                self._start_inline(tag, "`")
-                self.tag_stack.append((tag, ""))
-        elif tag == "a":
-            href = attrs_dict.get("href", "")
-            closer = f" ( {href} )" if href else ""
-            self.tag_stack.append((tag, closer))
-        elif tag == "pre":
-            self.pre_depth += 1
-            self._ensure_newline()
-            self._append("```\n")
-            self.tag_stack.append((tag, "\n```"))
-        elif tag == "blockquote":
-            self._ensure_newline()
-            self._append("> ")
-            self.tag_stack.append((tag, ""))
-        elif tag == "br":
-            self._append("\n")
-            if self._inside("blockquote"):
-                self._append("> ")
-        elif tag in {"p", "div"}:
-            if self._inside("blockquote"):
-                self._ensure_blockquote_prefix()
-            else:
-                self._ensure_newline()
-            self.tag_stack.append((tag, ""))
+@Pipe
+def tokenize(f):
+    """
+    pass 1: turn characters into tokens
+    this turns each tag into a token by searching for < followed by n chars followed by >.
+    https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L15
+    """
+    tok = ''
+    while True:
+        try:
+            c = next(f)
+        except StopIteration:
+            yield from tok
+            break
+        if c == '<':  # start of tag
+            yield from tok  # what we thought was a single token was not, in fact, a single token
+            tok = '<'
         else:
-            self.tag_stack.append((tag, ""))
-
-    def handle_startendtag(self, tag, attrs):
-        tag = tag.lower()
-
-        if tag == "mx-reply":
-            return
-
-        if self.skipping_mx_reply:
-            return
-
-        if tag == "br":
-            self._append("\n")
-            if self._inside("blockquote"):
-                self._append("> ")
-        elif tag == "hr":
-            self._ensure_newline()
-            self._append("---")
-            self._ensure_newline()
-
-    def handle_endtag(self, tag):
-        tag = tag.lower()
-
-        if self.skipping_mx_reply:
-            if tag == "mx-reply":
-                self.skipping_mx_reply = False
-            return
-
-        if tag in self.INLINE_MARKERS:
-            self._end_inline(tag)
-            self._pop_closer_for_tag(tag)
-            return
-
-        if tag == "code" and self.pre_depth == 0:
-            self._end_inline(tag)
-            self._pop_closer_for_tag(tag)
-            return
-
-        if tag in {
-            "a",
-            "code",
-            "pre",
-            "blockquote",
-            "p",
-            "div",
-        }:
-            closing = self._pop_closer_for_tag(tag)
-            self._append(closing)
-
-            if tag == "pre" and self.pre_depth > 0:
-                self.pre_depth -= 1
-
-            if tag in self.BLOCK_TAGS:
-                self._ensure_newline()
-
-    def handle_data(self, data):
-        if self.skipping_mx_reply:
-            return
-
-        if self.pre_depth == 0 and data.strip() == "" and "\n" in data:
-            return
-
-        self._append(data)
-
-    def handle_entityref(self, name):
-        if self.skipping_mx_reply:
-            return
-
-        self._append(html.unescape(f"&{name};"))
-
-    def handle_charref(self, name):
-        if self.skipping_mx_reply:
-            return
-
-        self._append(html.unescape(f"&#{name};"))
-
-    def get_text(self):
-        while self.inline_stack:
-            frame = self.inline_stack.pop()
-            self._append("".join(frame["parts"]))
-
-        result = "".join(self.out)
-
-        # Clean up excessive blank lines while preserving intentional line breaks.
-        result = re.sub(r"\n{3,}", "\n\n", result)
-
-        return result.strip()
-
-    def _append(self, text):
-        if self.inline_stack:
-            self.inline_stack[-1]["parts"].append(text)
-        else:
-            self.out.append(text)
-
-    def _current_output_text(self):
-        if self.inline_stack:
-            return "".join(self.inline_stack[-1]["parts"])
-
-        return "".join(self.out)
-
-    def _start_inline(self, tag, marker):
-        self.inline_stack.append({
-            "tag": tag,
-            "marker": marker,
-            "parts": [],
-        })
-
-    def _end_inline(self, tag):
-        for i in range(len(self.inline_stack) - 1, -1, -1):
-            frame = self.inline_stack[i]
-
-            if frame["tag"] != tag:
-                continue
-
-            del self.inline_stack[i]
-
-            marker = frame["marker"]
-            content = "".join(frame["parts"])
-            rendered = self._render_inline(marker, content)
-            self._append(rendered)
-            return True
-
-        return False
-
-    def _render_inline(self, marker, content):
-        if not content:
-            return content
-
-        leading_len = len(content) - len(content.lstrip())
-        trailing_len = len(content) - len(content.rstrip())
-
-        leading = content[:leading_len]
-        trailing = content[len(content) -
-                           trailing_len:] if trailing_len else ""
-        inner_end = len(content) - \
-            trailing_len if trailing_len else len(content)
-        inner = content[leading_len:inner_end]
-
-        if not inner:
-            return content
-
-        prefix = leading
-
-        if self._needs_space_before_marker(marker):
-            prefix += " "
-
-        return f"{prefix}{marker}{inner}{marker}{trailing}"
-
-    def _needs_space_before_marker(self, marker):
-        current = self._current_output_text()
-
-        if not current:
-            return False
-
-        previous = current[-1]
-
-        if previous.isspace():
-            return False
-
-        if self.inline_stack:
-            previous_marker = self.inline_stack[-1].get("marker")
-            return previous_marker is None or previous_marker == marker
-
-        return True
-
-    def _inside(self, tag):
-        tag = tag.lower()
-        return any(open_tag.lower() == tag for open_tag, _ in self.tag_stack)
-
-    def _ensure_blockquote_prefix(self):
-        current = self._current_output_text()
-
-        if not current:
-            self._append("> ")
-        elif current.endswith("> "):
-            return
-        elif current.endswith("\n"):
-            self._append("> ")
-        else:
-            self._append("\n> ")
-
-    def _ensure_newline(self):
-        current = self._current_output_text()
-
-        if current and not current.endswith("\n"):
-            self._append("\n")
-
-    def _pop_closer_for_tag(self, tag):
-        tag = tag.lower()
-
-        for i in range(len(self.tag_stack) - 1, -1, -1):
-            open_tag, closer = self.tag_stack[i]
-
-            if open_tag == tag:
-                del self.tag_stack[i]
-                return closer
-
-        return ""
+            tok += c
+            if len(tok) == 1 or c == '>':  # either we aren't building a token right now (if we were, tok would start with <), or we just finished building a token (by appending a >)
+                yield tok
+                tok = ''
 
 
-def matrix_html_to_xep0393(formatted_body: str) -> str:
+@Pipe
+def mark_self_closing(f):
+    """https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L34"""
+    while True:
+        try:
+            tok = next(f)
+        except StopIteration:
+            break
+
+        match tok:
+            case '<br>':
+                yield '<br/>'
+            case _:
+                yield tok
+
+
+@Pipe
+def fix_tag_matching(f):
     """
-    Convert a subset of Matrix pseudo-HTML to XMPP XEP-0393 Message Styling.
-
-    Supported:
-      <strong>, <b>          -> *bold*
-      <em>, <i>              -> _italic_
-      <del>, <s>, <strike>   -> ~strike~
-      <code>                 -> `code`
-      <pre><code>...</code></pre> -> ```code```
-      <blockquote>           -> > quote
-      <br>                   -> newline
-      <p>, <div>             -> paragraph-ish newlines
-
-    Inline styling output is adjusted slightly to comply with XEP-0393 span
-    rules. For example, <strong> bold </strong> becomes " *bold* ".
+    pass 3: use stack to match tags and erase unmatched closing tags
+    this makes sure tags match up, so e.g. <a><b>123</a></c> becomes <a><b>123</b></>
+    https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L48
     """
-    parser = _MatrixToXEP0393Parser()
-    parser.feed(formatted_body)
-    parser.close()
-    return parser.get_text()
+    stack = []
+    while True:
+        try:
+            tok = next(f)
+        except StopIteration:
+            while len(stack) > 0:
+                yield f'</{stack.pop()}>'
+            break
+        if len(tok) == 1:  # char
+            yield tok  # skip
+        elif tok[-2] == '/':  # self-closing tag
+            yield tok  # skip
+        elif tok[1] == '/':  # closing tag
+            if tok[2:-1] in stack:  # exists in stack, unravel until we hit it
+                while True:
+                    popped = stack.pop()
+                    yield f'</{popped}>'
+                    if popped == tok[2:-1]:
+                        # we hit our tag, move on
+                        break
+            # else drop
+        else:  # opening tag
+            yield tok
+            stack.append(tok[1:-1])  # push
+
+
+@Pipe
+def drop_redundant(f):
+    """
+    pass 4: drop redundant/irrelevant tags
+    this strips out redundancies in e.g. <em><em>abc</em> <em>def</em></em> (which then becomes <em>abc def</em>)
+    https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L76
+    """
+    stack = []
+    while True:
+        try:
+            tok = next(f)
+        except StopIteration:
+            break
+        if len(tok) == 1:  # char
+            yield tok  # skip
+        elif tok[-2] == '/':  # self-closing tag
+            yield tok  # skip
+        elif tok[1] == '/':  # closing tag
+            if stack.pop() != '.':  # not irrelevant
+                yield tok  # output
+        else:  # opening tag
+            match tok[1:-1]:
+                case 'em' | 'strong' | 'del':  # cannot be applied more than once
+                    if tok[1:-1] in stack:
+                        stack.append('.')
+                    else:
+                        stack.append(tok[1:-1])
+                        yield tok
+                # we drop code in pre (and vice versa) because it's easier to treat code as inline and pre as meaning codeblock (does anybody even use <pre> for anything other than code, anyway?)
+                case 'pre' | 'code':
+                    if 'pre' in stack or 'code' in stack:
+                        stack.append('.')
+                    else:
+                        stack.append(tok[1:-1])
+                        yield tok
+                case _:
+                    stack.append(tok[1:-1])
+                    yield tok
+
+
+@Pipe
+def drop_bad_blocks(f):
+    """
+    drop bad blocks (e.g. mx-reply)
+    https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L110
+    """
+    while True:
+        try:
+            tok = next(f)
+        except StopIteration:
+            break
+        if len(tok) == 1:  # char
+            yield tok  # skip
+        elif tok[-2] == '/':  # self-closing tag
+            yield tok  # skip
+        elif tok[1] == '/':  # closing tag
+            yield tok  # output
+        else:  # opening tag
+            match tok[1:-1]:
+                case 'mx-reply':  # drop block
+                    while True:
+                        try:
+                            tok = next(f)
+                        except StopIteration:
+                            break
+                        if tok == f'</{tok[1:-1]}>':
+                            break
+                case _:
+                    yield tok
+
+
+@Pipe
+def naive_convert(f):
+    """
+    semi-naive conversion to xmpp format
+    https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L136
+    """
+
+    quote_level = 0
+    unformat = False
+    while True:
+        try:
+            tok = next(f)
+        except StopIteration:
+            break
+        match tok:
+            case '\n':
+                yield '\n' + '> ' * quote_level
+            # this handles characters when inside a code block
+            case _ if unformat and len(tok) == 1:
+                yield tok
+            # handle single special characters:
+            case '*':
+                yield r'\*'
+            case '_':
+                yield r'\_'
+            case '~':
+                yield r'\~'
+            case '`':
+                yield r'\`'
+            case '>':
+                yield r'\>'
+            # handle formatting toggles (this only works if we fixTagMatching and dropRedundant):
+            case '<em>' | '</em>':
+                yield '_'
+            case '<strong>' | '</strong>':
+                yield '*'
+            case '<del>' | '</del>':
+                yield '~'
+            case '<code>' | '</code>':
+                yield '`'
+                unformat = not unformat
+            case '<pre>' | '</pre>':
+                yield '\n' + '> ' * quote_level + '```\n' + '> ' * quote_level
+                unformat = not unformat
+            # handle blockquotes:
+            case '<blockquote>':
+                quote_level += 1
+                yield '\n' + '> ' * quote_level
+            case '</blockquote>':
+                quote_level -= 1
+                yield '\n' + '> ' * quote_level
+            # skip paragraph and line break tags:
+            case '<p>' | '</p>' | '<br/>':
+                pass
+            # if you want to drop unknown tags, uncomment the following:
+            # case _ if len(tok) > 0:
+            # pass
+            # directly copy anything we didn't cover
+            case _:
+                yield tok
+
+
+def matrix_html_to_xep0393(message: str) -> str:
+    """
+    https://git.qwertydotpl.us/qwerty/patches/src/branch/main/convert-matrix-formatted_body-to-xmpp-xep0393.py#L150
+    """
+    return re.sub(
+        '\n((> )*\n)+', '\n',
+        "".join(
+            message
+            | to_iter
+            | tokenize
+            | mark_self_closing
+            | fix_tag_matching
+            | drop_redundant
+            | drop_bad_blocks
+            | naive_convert
+        )
+    )
+
+
+if __name__ == "__main__":
+    message = "<p>test <em>italic</em> <strong>bold</strong> <del>strikethrough</del> <code>code</code></p>\n<pre><code>code\n</code></pre>\n<blockquote>\n<p>quote<br>\n<code>code</code></p>\n</blockquote>"
+    print(
+        re.sub(
+            '\n((> )*\n)+', '\n',
+            "".join(
+                message
+                | to_iter
+                | tokenize
+                | mark_self_closing
+                | fix_tag_matching
+                | drop_redundant
+                | drop_bad_blocks
+                | naive_convert
+            )
+        )
+    )
