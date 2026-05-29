@@ -561,7 +561,7 @@ def matrix_html_to_xep0393(message: str) -> str:
 
 
 if __name__ == "__main__":
-    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<test novalue><endtag"
+    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<test novalue><a href='https://matrix.to/'><endtag"
     VERIFY = matrix_html_to_xep0393(TEST_MESSAGE)
     print(VERIFY)
     assert VERIFY.strip() == '''
