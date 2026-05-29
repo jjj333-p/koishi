@@ -209,22 +209,7 @@ def tokenize(f):
     2026-05-28 rewrite into state machine, fix pathological case of <a b=">"> by switching to a new "tag-quote" state
     """
     state = ('literal',)
-    while True:
-        try:
-            c = next(f)
-        except StopIteration:
-            match state:
-                case ('literal',):
-                    pass
-                case ('tag', tok):
-                    yield '<'
-                    yield from tok
-                case ('tag-quote', tok, _):
-                    yield '<'
-                    yield from tok
-                case ('escape', tok):
-                    yield from tok
-            break
+    for c in f:
         match state:
             case ('literal',):
                 if c == '<':
@@ -260,7 +245,18 @@ def tokenize(f):
                     state = ('literal',)
                 else:
                     state = ('escape', tok + c)
-
+    # end:
+    match state:
+        case ('literal',):
+            pass
+        case ('tag', tok):
+            yield '<'
+            yield from tok
+        case ('tag-quote', tok, _):
+            yield '<'
+            yield from tok
+        case ('escape', tok):
+            yield from tok
 @Pipe
 def extract_tag_attributes(f):
     """
@@ -268,11 +264,7 @@ def extract_tag_attributes(f):
     https://git.qwertydotpl.us/qwerty/patches/src/commit/be753f233ce105182c215125fb6bce254ca19b0c/0001-feat-add-attrs-links-to-matrix-xmpp-converter.patch#L23
     """
 
-    while True:
-        try:
-            tok = next(f)
-        except StopIteration:
-            break
+    for tok in f:
         if len(tok) <= 1:
             yield tok
             continue
@@ -305,6 +297,8 @@ def extract_tag_attributes(f):
         #  ^ key, composed of some number of word characters a-zA-Z0-9_
 
         def fixattr(x):  # parse escapes in attributes (because doing that in the tokenizer is difficult
+            if not isinstance(x,str):
+                return None
             return (x.replace('&lt;','<')
                      .replace('&gt;','>')
                      .replace('&quot;','"')
@@ -322,11 +316,7 @@ def mark_self_closing(f):
     """
     https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L34
     """
-    while True:
-        try:
-            tok = next(f)
-        except StopIteration:
-            break
+    for tok in f:
         match tok:
             case ('br', x):
                 yield ('br/', x)
@@ -345,14 +335,7 @@ def fix_tag_matching(f):
     """
     stack = []
     halfstack = []  # version of stack with only tag names
-    while True:
-        try:
-            tok = next(f)
-        except StopIteration:
-            while len(stack) > 0:
-                tag = stack.pop()
-                yield ('/' + tag[0], tag[1])
-            break
+    for tok in f:
         if isinstance(tok, str):  # char
             yield tok  # skip
             continue
@@ -373,18 +356,17 @@ def fix_tag_matching(f):
             yield tok
             stack.append(tok)  # push
             halfstack.append(name)
-
+    # exit: unwind stack
+    while len(stack) > 0:
+        tag = stack.pop()
+        yield ('/' + tag[0], tag[1])
 
 @Pipe
 def rename_equivalents(f):
     """
     https://git.qwertydotpl.us/qwerty/patches/src/commit/be753f233ce105182c215125fb6bce254ca19b0c/0001-feat-add-attrs-links-to-matrix-xmpp-converter.patch#L134
     """
-    while True:
-        try:
-            tok = next(f)
-        except StopIteration:
-            break
+    for tok in f:
         if isinstance(tok, str):
             yield tok
             continue
@@ -416,11 +398,7 @@ def drop_redundant(f):
     https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L76
     """
     stack = []
-    while True:
-        try:
-            tok = next(f)
-        except StopIteration:
-            break
+    for tok in f:
         if isinstance(tok, str):  # char
             yield tok  # skip
             continue
@@ -459,11 +437,7 @@ def drop_bad_blocks(f):
     drop bad blocks (e.g. mx-reply)
     https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L110
     """
-    while True:
-        try:
-            tok = next(f)
-        except StopIteration:
-            break
+    for tok in f:
         if isinstance(tok, str):  # char
             yield tok  # skip
             continue
@@ -500,12 +474,7 @@ def naive_convert(f):
     def newline():
         return '\n' + '> ' * quote_level  # because we use this construct enough to bother making it a variable (computed value because used immediately after quote_level += 1)
 
-    while True:
-        try:
-            tok = next(f)
-            # print(f'naive_convert {repr(tok)}')
-        except StopIteration:
-            break
+    for tok in f:
         match tok:
             case '\n':
                 yield newline()
@@ -592,7 +561,7 @@ def matrix_html_to_xep0393(message: str) -> str:
 
 
 if __name__ == "__main__":
-    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<endtag"
+    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<test novalue><endtag"
     VERIFY = matrix_html_to_xep0393(TEST_MESSAGE)
     print(VERIFY)
     assert VERIFY.strip() == '''
