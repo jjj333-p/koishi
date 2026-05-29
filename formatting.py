@@ -70,7 +70,10 @@ def _parse_range(
     while i < end:
         ch = s[i]
 
-        if ch in _MARKERS and ch not in disabled_markers and _is_valid_open(s, i, ch, open_positions):
+        if ch in _MARKERS \
+            and ch not in disabled_markers \
+                and _is_valid_open(s, i, ch, open_positions):
+
             close = _find_closing(s, i, end, ch)
 
             if close is not None:
