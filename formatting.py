@@ -8,133 +8,7 @@ import html
 import re
 from pipe import Pipe
 
-_MARKERS = {
-    "*": "strong",
-    "_": "em",
-    "~": "del",
-    "`": "code",
-}
-
-
-def _is_valid_open(s: str, pos: int, marker: str, open_positions: dict) -> bool:
-    if pos + 1 >= len(s):
-        return False
-
-    if s[pos + 1].isspace():
-        return False
-
-    if pos == 0:
-        return True
-
-    previous = s[pos - 1]
-
-    if previous.isspace():
-        return True
-
-    previous_open_marker = open_positions.get(pos - 1)
-    return previous_open_marker is not None and previous_open_marker != marker
-
-
-def _is_valid_close(s: str, pos: int, start: int) -> bool:
-    if pos <= start + 1:
-        return False
-
-    return not s[pos - 1].isspace()
-
-
-def _find_closing(s: str, start: int, end: int, marker: str) -> int | None:
-    pos = start + 1
-
-    while pos < end:
-        if s[pos] == marker and _is_valid_close(s, pos, start):
-            return pos
-
-        pos += 1
-
-    return None
-
-
-def _parse_range(
-    s: str,
-    start: int,
-    end: int,
-    open_positions: dict,
-    disabled_markers: set[str] | None = None,
-) -> str:
-    if disabled_markers is None:
-        disabled_markers = set()
-
-    out = []
-    i = start
-
-    while i < end:
-        ch = s[i]
-
-        if ch in _MARKERS \
-            and ch not in disabled_markers \
-                and _is_valid_open(s, i, ch, open_positions):
-
-            close = _find_closing(s, i, end, ch)
-
-            if close is not None:
-                tag = _MARKERS[ch]
-                open_positions[i] = ch
-
-                if ch == "`":
-                    content = html.escape(s[i + 1:close], quote=False)
-                else:
-                    content = _parse_range(
-                        s,
-                        i + 1,
-                        close,
-                        open_positions,
-                        disabled_markers | {ch},
-                    )
-
-                escaped_marker = html.escape(ch, quote=False)
-                out.append(
-                    f"{escaped_marker}<{tag}>{content}</{tag}>{escaped_marker}")
-                i = close + 1
-                continue
-
-        out.append(html.escape(ch, quote=False))
-        i += 1
-
-    return "".join(out)
-
-
-def _convert_inline(s: str) -> str:
-    return _parse_range(s, 0, len(s), open_positions={})
-
-
-def _render_plain(part: str) -> str:
-    parts = re.split(r"(```(?:\n)?[\s\S]*?```)", part)
-    output = []
-
-    for subpart in parts:
-        if subpart.startswith("```") and subpart.endswith("```"):
-            code = subpart[3:-3]
-            if code.startswith("\n"):
-                code = code[1:]
-            if code.endswith("\n"):
-                code = code[:-1]
-
-            output.append(
-                f"<pre><code>{html.escape(code, quote=False)}</code></pre>")
-            continue
-
-        lines = subpart.splitlines(keepends=False)
-
-        for i, line in enumerate(lines):
-            output.append(_convert_inline(line))
-
-            if i < len(lines) - 1:
-                output.append("<br>")
-
-    return "".join(output)
-
-
-def xep0393_to_matrix_html(text: str) -> str:
+def xep0393_to_matrix_html(msg: str) -> str:
     """
     Convert a subset of XMPP XEP-0393 Message Styling to Matrix pseudo-HTML.
 
@@ -145,52 +19,61 @@ def xep0393_to_matrix_html(text: str) -> str:
       `code`           -> `<code>code</code>`
       ```code block``` -> <pre><code>code block</code></pre>
       > quote          -> <blockquote>quote</blockquote>
+      > ... > quote    -> correct number of blockquotes
 
     The original inline styling directives are intentionally preserved.
     """
-    lines = text.splitlines(keepends=False)
-    output = []
-    i = 0
+    """
+    how this works:
 
-    while i < len(lines):
-        line = lines[i]
+    1. split out and parse block level elements recursively, storing alternating unparsed and parsed chunks into `staging`
+    2. if we find block level elements of a given type, jump to merging
+        a. recursively call ourselves to parse the unparsed chunks
+        b. copy the parsed chunks into the output
+        c. return
+    3. if there are no more block level elements, split our input by '\n', parse the lines as spans, and join by '<br>'
 
-        if line.startswith(">"):
-            quote_lines = []
+    span parsing substitutes directives for html by pairing directives and parsing the contents between the pairs as spans (recursive method)
+    """
 
-            while i < len(lines) and lines[i].startswith(">"):
-                quote_line = lines[i][1:]
-                if quote_line.startswith(" "):
-                    quote_line = quote_line[1:]
-                quote_lines.append(quote_line)
-                i += 1
-
-            output.append(
-                "<blockquote>"
-                + _render_plain("\n".join(quote_lines))
-                + "</blockquote>"
-            )
-
-            if i < len(lines):
-                output.append("<br>")
-
-                if lines[i] == "":
-                    i += 1
-
-            continue
-
-        plain_lines = []
-
-        while i < len(lines) and not lines[i].startswith(">"):
-            plain_lines.append(lines[i])
-            i += 1
-
-        output.append(_render_plain("\n".join(plain_lines)))
-
-        if i < len(lines):
-            output.append("<br>")
-
-    return "".join(output)
+    # parse and mark code blocks:
+    staging = []
+    lastend = 0
+    for match in re.finditer('^```\n((.*(\n.*)*)?)\n```$',msg,flags=re.MULTILINE):
+        staging.append((False, msg[lastend:match.start()]))  # unparsed chunk
+        staging.append((True, f'<pre><code>{html.escape(match.group(1))}</code></pre>'))  # parsed chunk
+        lastend = match.end()  # advance index
+    staging.append((False, msg[lastend:]))  # copy final unparsed chunk
+    if len(staging) == 1:  # no code blocks; parse and mark block quotes:
+        def strip_parse_quoteblock(m):  # strip "> " from quoteblock and send back through the parser
+            return xep0393_to_matrix_html(re.sub('^> ?','',m,flags=re.MULTILINE))
+        staging = []
+        lastend = 0
+        for match in re.finditer('^>.*(\n>.*)*$',msg,flags=re.MULTILINE):
+            staging.append((False, msg[lastend:match.start()]))  # unparsed section
+            staging.append((True, f'<blockquote>{strip_parse_quoteblock(match.group(0))}</blockquote>'))
+            lastend = match.end()
+        staging.append((False, msg[lastend:]))
+    if len(staging) == 1:  # no code blocks or block quotes; parse spans:
+        def parse_span(text: str) -> str:
+            def sub_tag(m: re.Match) -> str:
+                match m.group(1):
+                    case '*':
+                        return f'*<strong>{parse_span(m.group(2))}</strong>*'
+                    case '_':
+                        return f'_<em>{parse_span(m.group(2))}</em>_'
+                    case '~':
+                        return f'~<del>{parse_span(m.group(2))}</del>~'
+                    case '`':
+                        return f'`<code>{m.group(2)}</code>`'
+            return re.sub(r'([*_~`])(.+?)\1',sub_tag,text)
+        return '<br>'.join(parse_span(html.escape(line)) for line in msg.split('\n'))
+    for i, (parsed, message) in enumerate(staging):  # parse unparsed
+        if len(message) == 0 or parsed:
+            staging[i] = message
+        else:
+            staging[i] = xep0393_to_matrix_html(message)
+    return ''.join(staging)  # join output together
 
 
 @Pipe
