@@ -516,6 +516,8 @@ def naive_convert(f):
             case ('/a', {'href': href}):
                 # some quirk with how we're parsing in the href leaves a "" around it
                 sanitized_href = href[1:-1] if len(href) > 2 else href
+                if sanitized_href.startswith("https://matrix.to/"):
+                    continue
                 yield f' ( {sanitized_href} )'
             # drop unknown tags:
             case (_, _):
