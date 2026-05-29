@@ -6,7 +6,6 @@ Distributed as-is and without warranty
 """
 import html
 import re
-from html.parser import HTMLParser
 from pipe import Pipe
 
 
@@ -212,6 +211,7 @@ def tokenize(f):
     """
     pass 1: turn characters into tokens
     this turns each tag into a token by searching for < followed by n chars followed by >.
+    also handles &lt; and &gt; entities as single tokens.
     https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L15
     """
     tok = ''
@@ -222,11 +222,19 @@ def tokenize(f):
             yield from tok
             break
         if c == '<':  # start of tag
-            yield from tok  # what we thought was a single token was not, in fact, a single token
+            yield from tok
             tok = '<'
+        # start of entity (but not inside a tag)
+        elif c == '&' and not tok.startswith('<'):
+            yield from tok
+            tok = '&'
         else:
             tok += c
-            if len(tok) == 1 or c == '>':  # either we aren't building a token right now (if we were, tok would start with <), or we just finished building a token (by appending a >)
+            if len(tok) == 1 or c == '>':
+                yield tok
+                tok = ''
+            # finished building an entity token
+            elif tok.startswith('&') and c == ';':
                 yield tok
                 tok = ''
 
@@ -235,6 +243,7 @@ def tokenize(f):
 def extract_tag_attributes(f):
     """
     extract attributes from tags and turn into tuple[string,dict]
+    https://git.qwertydotpl.us/qwerty/patches/src/commit/be753f233ce105182c215125fb6bce254ca19b0c/0001-feat-add-attrs-links-to-matrix-xmpp-converter.patch#L23
     """
 
     while True:
@@ -280,7 +289,9 @@ def extract_tag_attributes(f):
 
 @Pipe
 def mark_self_closing(f):
-    """https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L34"""
+    """
+    https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L34
+    """
     while True:
         try:
             tok = next(f)
@@ -337,6 +348,9 @@ def fix_tag_matching(f):
 
 @Pipe
 def rename_equivalents(f):
+    """
+    https://git.qwertydotpl.us/qwerty/patches/src/commit/be753f233ce105182c215125fb6bce254ca19b0c/0001-feat-add-attrs-links-to-matrix-xmpp-converter.patch#L134
+    """
     while True:
         try:
             tok = next(f)
@@ -354,7 +368,8 @@ def rename_equivalents(f):
         match name:
             case 'i':
                 yield (cl + 'em', tok[1])
-            # functionally bold and underline exist for the same reason, and xmpp only supports the one (and honestly, who really uses underline anymore?)
+            # functionally bold and underline exist for the same reason, and xmpp only supports bold
+            # (and honestly, who really uses underline anymore?)
             case 'b' | 'u':
                 yield (cl + 'strong', tok[1])
             case 's':
@@ -367,7 +382,8 @@ def rename_equivalents(f):
 def drop_redundant(f):
     """
     pass 4: drop redundant/irrelevant tags
-    this strips out redundancies in e.g. <em><em>abc</em> <em>def</em></em> (which then becomes <em>abc def</em>)
+    this strips out redundancies in e.g. <em><em>abc</em> <em>def</em></em> 
+    (which then becomes <em>abc def</em>)
     https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L76
     """
     stack = []
@@ -394,7 +410,9 @@ def drop_redundant(f):
                     else:
                         stack.append(name)
                         yield tok
-                # we drop code in pre (and vice versa) because it's easier to treat code as inline and pre as meaning codeblock (does anybody even use <pre> for anything other than code, anyway?)
+                # we drop code in pre (and vice versa) because it's easier to treat code as inline
+                # and pre as meaning codeblock
+                # (does anybody even use <pre> for anything other than code, anyway?)
                 case 'pre' | 'code':
                     if 'pre' in stack or 'code' in stack:
                         stack.append('.')
@@ -472,6 +490,11 @@ def naive_convert(f):
                 yield r'\`'
             case '>':
                 yield r'\>'
+            # unescape <>
+            case ('gt', {}):
+                yield '>'
+            case ('lt', {}):
+                yield '<'
             # handle formatting toggles (this only works if we fixTagMatching and dropRedundant):
             case ('em' | '/em', _):
                 yield '_'
@@ -495,10 +518,12 @@ def naive_convert(f):
             case ('p' | '/p' | 'br/', _):
                 yield '\n' + '> ' * quote_level
             case ('/a', {'href': href}):
-                yield f' ({href})'
+                # some quirk with how we're parsing in the href leaves a "" around it
+                sanitized_href = href[1:-1] if len(href) > 2 else href
+                yield f' ( {sanitized_href} )'
             # drop unknown tags:
             case (_, _):
-                pass
+                print("dropping", tok)
             # directly copy anything we didn't cover
             case _:
                 yield tok
@@ -526,9 +551,9 @@ def matrix_html_to_xep0393(message: str) -> str:
 
 
 if __name__ == "__main__":
-    message = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass'>test link</a> <a>test closing attr</a href='fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>"
+    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass'>test link</a> <a>test closing attr</a href='fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>"
     print(
-        matrix_html_to_xep0393(message)
+        matrix_html_to_xep0393(TEST_MESSAGE)
     )
     # this test should yield EXACTLY:
     # pylint: disable=pointless-string-statement
