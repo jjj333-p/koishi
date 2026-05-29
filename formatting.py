@@ -205,35 +205,61 @@ def to_iter(msg: str):
 @Pipe
 def tokenize(f):
     """
-    pass 1: turn characters into tokens
-    this turns each tag into a token by searching for < followed by n chars followed by >.
-    also handles &lt; and &gt; entities as single tokens.
-    https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L15
+    turn characters into tokens
+    2026-05-28 rewrite into state machine, fix pathological case of <a b=">"> by switching to a new "tag-quote" state
     """
-    tok = ''
+    state = ('literal',)
     while True:
         try:
             c = next(f)
         except StopIteration:
-            yield from tok
+            match state:
+                case ('literal',):
+                    pass
+                case ('tag', tok):
+                    yield '<'
+                    yield from tok
+                case ('tag-quote', tok, _):
+                    yield '<'
+                    yield from tok
+                case ('escape', tok):
+                    yield from tok
             break
-        if c == '<':  # start of tag
-            yield from tok
-            tok = '<'
-        # start of entity (but not inside a tag)
-        elif c == '&' and not tok.startswith('<'):
-            yield from tok
-            tok = '&'
-        else:
-            tok += c
-            if len(tok) == 1 or c == '>':
-                yield tok
-                tok = ''
-            # finished building an entity token
-            elif tok.startswith('&') and c == ';':
-                yield tok
-                tok = ''
-
+        match state:
+            case ('literal',):
+                if c == '<':
+                    state = ('tag', '')
+                elif c == '&':
+                    state = ('escape', '&')
+                else:
+                    yield c
+            case ('tag', tok):
+                if c == '>':  # end tag
+                    yield tok + ' '
+                    state = ('literal',)
+                elif c == '<':  # wipe current tag, start new one
+                    yield '<'
+                    yield from tok
+                    state = ('tag', '')
+                elif c in '"\'':  # start processing quoted section
+                    state = ('tag-quote', tok + c, c)
+                else:  # add character to tag
+                    state = ('tag', tok + c)
+            case ('tag-quote', tok, quote):  # quotes inside tag, e.g. <a href=">">
+                if c == quote:  # hit the end of the quotes
+                    state = ('tag', tok + c)
+                else:
+                    state = ('tag-quote', tok + c, quote)
+            case ('escape', tok):  # escape sequence &\w+;
+                if c == ';':
+                    yield tok + '/'  # act like escapes are special self closing tags
+                    state = ('literal',)
+                elif c == ' ':
+                    yield from tok
+                    yield c
+                    state = ('literal',)
+                else:
+                    state = ('escape', tok + c)
 
 @Pipe
 def extract_tag_attributes(f):
@@ -251,7 +277,6 @@ def extract_tag_attributes(f):
             yield tok
             continue
         # print(f'extract_tag_attributes {repr(tok)}')
-        tok = tok[1:-1]  # strip <>
         try:
             # if there is no space, index will throw a ValueError
             idx = tok.index(' ')
@@ -265,8 +290,9 @@ def extract_tag_attributes(f):
             name += '/'
             tok = tok[:-1]
 
-        if tok[0] == '/':  # closing tags shouldn't have attributes
+        if tok[0] in '/&':  # closing tags and escapes shouldn't have attributes
             yield (name, {})
+            continue  # skip further processing
         tok = tok[idx + 1:]
 
         tok += ' '  # makes the next step marginally easier
@@ -277,7 +303,15 @@ def extract_tag_attributes(f):
         #  ^       ^^ value, possibly in quotes
         #  ^       ^ equals
         #  ^ key, composed of some number of word characters a-zA-Z0-9_
-        attrs = dict((m.group(1), m.group(2)) for m in re.finditer(
+
+        def fixattr(x):  # parse escapes in attributes (because doing that in the tokenizer is difficult
+            return (x.replace('&lt;','<')
+                     .replace('&gt;','>')
+                     .replace('&quot;','"')
+                     .replace('&apos;',"'")
+                     .replace('&amp;','&'))
+
+        attrs = dict((m.group(1), fixattr(m.group(2))) for m in re.finditer(
             '(\\w+)(?:=(\'[^\']+\'|"[^"]+"|[^ ]+))? ', tok))
 
         yield (name, attrs)
@@ -322,7 +356,6 @@ def fix_tag_matching(f):
         if isinstance(tok, str):  # char
             yield tok  # skip
             continue
-        # print(f'fix_tag_matching {repr(tok)}')
         name = tok[0]
         if name[-1] == '/':  # self-closing tag
             yield tok  # skip
@@ -378,7 +411,7 @@ def rename_equivalents(f):
 def drop_redundant(f):
     """
     pass 4: drop redundant/irrelevant tags
-    this strips out redundancies in e.g. <em><em>abc</em> <em>def</em></em> 
+    this strips out redundancies in e.g. <em><em>abc</em> <em>def</em></em>
     (which then becomes <em>abc def</em>)
     https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L76
     """
@@ -463,6 +496,10 @@ def naive_convert(f):
 
     quote_level = 0
     unformat = False
+
+    def newline():
+        return '\n' + '> ' * quote_level  # because we use this construct enough to bother making it a variable (computed value because used immediately after quote_level += 1)
+
     while True:
         try:
             tok = next(f)
@@ -471,7 +508,7 @@ def naive_convert(f):
             break
         match tok:
             case '\n':
-                yield '\n' + '> ' * quote_level
+                yield newline()
             # this handles characters when inside a code block:
             case _ if unformat and isinstance(tok, str):
                 yield tok
@@ -486,12 +523,18 @@ def naive_convert(f):
                 yield '\u200B`\u200B'
             case '>':
                 yield '\u200B>'
-            # unescape <>
-            case ('gt', {}):
-                yield '>'
-            case ('lt', {}):
+            # unescape <>"'&
+            case ('&gt/', _):
+                yield '\u200B>'
+            case ('&lt/', _):
                 yield '<'
-            # handle formatting toggles (this only works if we fixTagMatching and dropRedundant):
+            case ('&quot/', _):
+                yield '"'
+            case ('&apos/', _):
+                yield "'"
+            case ('&amp/', _):
+                yield '&'
+            # handle formatting toggles (this only works because we fixTagMatching and dropRedundant):
             case ('em' | '/em', _):
                 yield '_'
             case ('strong' | '/strong', _):
@@ -502,20 +545,20 @@ def naive_convert(f):
                 yield '`'
                 unformat = not unformat
             case ('pre' | '/pre', _):
-                yield '\n' + '> ' * quote_level + '```\n' + '> ' * quote_level
+                yield newline() + '```' + newline()
                 unformat = not unformat
             # handle blockquotes:
             case ('blockquote', _):
                 quote_level += 1
-                yield '\n' + '> ' * quote_level
+                yield newline()
             case ('/blockquote', _):
                 quote_level -= 1
-                yield '\n' + '> ' * quote_level
+                yield newline()
             case ('p' | '/p' | 'br/', _):
-                yield '\n' + '> ' * quote_level
+                yield newline()
             case ('/a', {'href': href}):
-                # some quirk with how we're parsing in the href leaves a "" around it
-                sanitized_href = href[1:-1] if len(href) > 2 else href
+                # extract_tag_attributes doesn't strip out quotes, so we strip them here:
+                sanitized_href = href.strip('\'"')
                 if sanitized_href.startswith("https://matrix.to/"):
                     continue
                 yield f' ( {sanitized_href} )'
@@ -549,22 +592,21 @@ def matrix_html_to_xep0393(message: str) -> str:
 
 
 if __name__ == "__main__":
-    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass'>test link</a> <a>test closing attr</a href='fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>"
-    print(
-        matrix_html_to_xep0393(TEST_MESSAGE)
-    )
-    # this test should yield EXACTLY:
-    # pylint: disable=pointless-string-statement
-    '''
-    <test interrupted tag _*bold&italic test
-    br test link ('pass') test closing attr*_ ~strikethrough~
-    > 1 quote
-    > > 2 quotes
-    > > ```
-    > > code in
-    > > quotes
-    > > ```
-    paragraph 1
-    out of paragraph 1
-    paragraph 2
-    '''
+    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<endtag"
+    VERIFY = matrix_html_to_xep0393(TEST_MESSAGE)
+    print(VERIFY)
+    assert VERIFY.strip() == '''
+<test interrupted tag _*bold&italic test
+br test link ( pass< ) test closing attr, pathological attr*_ ~strikethrough~
+> 1 quote
+> > 2 quotes
+> > ```
+> > code in
+> > quotes
+> > ```
+paragraph 1
+out of paragraph 1
+paragraph 2
+test<\u200b>&escape<endtag
+'''.strip('\n')
+
