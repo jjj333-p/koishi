@@ -8,6 +8,9 @@ import html
 import re
 from pipe import Pipe
 
+_CODEBLOCK_REGEX = r'^```[ \t]*([^\n]*)\n([\s\S]*?)\n```$'
+
+
 def xep0393_to_matrix_html(msg: str) -> str:
     """
     Convert a subset of XMPP XEP-0393 Message Styling to Matrix pseudo-HTML.
@@ -22,8 +25,7 @@ def xep0393_to_matrix_html(msg: str) -> str:
       > ... > quote    -> correct number of blockquotes
 
     The original inline styling directives are intentionally preserved.
-    """
-    """
+
     how this works:
 
     1. split out and parse block level elements recursively, storing alternating unparsed and parsed chunks into `staging`
@@ -39,9 +41,27 @@ def xep0393_to_matrix_html(msg: str) -> str:
     # parse and mark code blocks:
     staging = []
     lastend = 0
-    for match in re.finditer('^```\n((.*(\n.*)*)?)\n```$',msg,flags=re.MULTILINE):
-        staging.append((False, msg[lastend:match.start()]))  # unparsed chunk
-        staging.append((True, f'<pre><code>{html.escape(match.group(1))}</code></pre>'))  # parsed chunk
+    for match in re.finditer(_CODEBLOCK_REGEX, msg, flags=re.MULTILINE):
+        # unparsed chunk
+        staging.append((False, msg[lastend:match.start()]))
+
+        # Extract language (Group 1) and code content (Group 2)
+        lang = match.group(1).strip()
+        code = match.group(2)
+
+        # If a language was specified, add it as a CSS class (standard Markdown behavior)
+        if lang:
+            escaped_lang = html.escape(lang)
+
+            # weird gajim special case
+            if escaped_lang.startswith("python"):
+                escaped_lang = "py"
+
+            parsed_chunk = f'<pre><code class="language-{escaped_lang}">{html.escape(code)}</code></pre>'
+        else:
+            parsed_chunk = f'<pre><code>{html.escape(code)}</code></pre>'
+
+        staging.append((True, parsed_chunk))
         lastend = match.end()  # advance index
 
     staging.append((False, msg[lastend:]))  # copy final unparsed chunk
@@ -148,6 +168,8 @@ def tokenize(f):
             yield from tok
         case ('escape', tok):
             yield from tok
+
+
 @Pipe
 def extract_tag_attributes(f):
     """
@@ -188,13 +210,13 @@ def extract_tag_attributes(f):
         #  ^ key, composed of some number of word characters a-zA-Z0-9_
 
         def fixattr(x):  # parse escapes in attributes (because doing that in the tokenizer is difficult
-            if not isinstance(x,str):
+            if not isinstance(x, str):
                 return None
-            return (x.replace('&lt;','<')
-                     .replace('&gt;','>')
-                     .replace('&quot;','"')
-                     .replace('&apos;',"'")
-                     .replace('&amp;','&'))
+            return (x.replace('&lt;', '<')
+                     .replace('&gt;', '>')
+                     .replace('&quot;', '"')
+                     .replace('&apos;', "'")
+                     .replace('&amp;', '&'))
 
         attrs = dict((m.group(1), fixattr(m.group(2))) for m in re.finditer(
             '(\\w+)(?:=(\'[^\']+\'|"[^"]+"|[^ ]+))? ', tok))
@@ -251,6 +273,7 @@ def fix_tag_matching(f):
     while len(stack) > 0:
         tag = stack.pop()
         yield ('/' + tag[0], tag[1])
+
 
 @Pipe
 def rename_equivalents(f):
@@ -363,7 +386,8 @@ def naive_convert(f):
     unformat = False
 
     def newline():
-        return '\n' + '> ' * quote_level  # because we use this construct enough to bother making it a variable (computed value because used immediately after quote_level += 1)
+        # because we use this construct enough to bother making it a variable (computed value because used immediately after quote_level += 1)
+        return '\n' + '> ' * quote_level
 
     for tok in f:
         match tok:
@@ -469,4 +493,3 @@ out of paragraph 1
 paragraph 2
 test<\u200b>&escape<endtag
 '''.strip('\n')
-
