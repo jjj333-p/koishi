@@ -535,7 +535,7 @@ class KoishiRoom:
         if event.sender == self.matrix.mxid:
             return
 
-        user_jid = f"{event.sender[1:].replace(':','_')}@{self.xmpp.boundjid.bare}"
+        user_jid = f"{event.sender[1:].replace(':', '_')}@{self.xmpp.boundjid.bare}"
 
         new_bridged_muc_jid = util.escape_nickname(
             self.muc_jid_str,
@@ -678,7 +678,7 @@ class KoishiRoom:
         if event.sender == self.matrix.mxid:
             return
 
-        user_jid = f"{event.sender[1:].replace(':','_')}@{self.xmpp.boundjid.bare}"
+        user_jid = f"{event.sender[1:].replace(':', '_')}@{self.xmpp.boundjid.bare}"
 
         new_bridged_muc_jid = util.escape_nickname(
             self.muc_jid_str,
@@ -732,9 +732,9 @@ class KoishiRoom:
                 )
             except TimeoutError as _:
                 await send_error(
-                    "Timed out trying to join puppet to MUC. \
-                        This is most often caused by your nickname being already in use. \
-                            Please change your displayname and try again."
+                    "Timed out trying to join puppet to MUC. "
+                    "This is most often caused by your nickname being already in use. "
+                    "Please change your displayname and try again."
                 )
                 return
             except Exception as e:
@@ -871,7 +871,7 @@ class KoishiRoom:
         # hold onto events until they can be bridged
         await self.xmpp.started.wait()
 
-        user_jid = f"{event.user_id[1:].replace(':','_')}@{self.xmpp.boundjid.bare}"
+        user_jid = f"{event.user_id[1:].replace(':', '_')}@{self.xmpp.boundjid.bare}"
 
         # only send receipts for joined puppets
         if not user_jid in self.bridged_jids:
