@@ -4,4 +4,5 @@ slixmpp
 matrix-nio
 fastapi
 httpx
-uvicornpy
+uvicorn
+pipe
