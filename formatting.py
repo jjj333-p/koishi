@@ -43,15 +43,23 @@ def xep0393_to_matrix_html(msg: str) -> str:
         staging.append((False, msg[lastend:match.start()]))  # unparsed chunk
         staging.append((True, f'<pre><code>{html.escape(match.group(1))}</code></pre>'))  # parsed chunk
         lastend = match.end()  # advance index
+
     staging.append((False, msg[lastend:]))  # copy final unparsed chunk
     if len(staging) == 1:  # no code blocks; parse and mark block quotes:
-        def strip_parse_quoteblock(m):  # strip "> " from quoteblock and send back through the parser
-            return xep0393_to_matrix_html(re.sub('^> ?','',m,flags=re.MULTILINE))
+        # strip "> " from quoteblock and send back through the parser
+        def strip_parse_quoteblock(m):
+            return xep0393_to_matrix_html(re.sub('^> ?', '', m, flags=re.MULTILINE))
         staging = []
         lastend = 0
-        for match in re.finditer('^>.*(\n>.*)*$',msg,flags=re.MULTILINE):
-            staging.append((False, msg[lastend:match.start()]))  # unparsed section
-            staging.append((True, f'<blockquote>{strip_parse_quoteblock(match.group(0))}</blockquote>'))
+        for match in re.finditer('^>.*(\n>.*)*$', msg, flags=re.MULTILINE):
+            # unparsed section
+            staging.append((False, msg[lastend:match.start()]))
+            staging.append(
+                (
+                    True,
+                    f'<blockquote>{strip_parse_quoteblock(match.group(0))}</blockquote>'
+                )
+            )
             lastend = match.end()
         staging.append((False, msg[lastend:]))
     if len(staging) == 1:  # no code blocks or block quotes; parse spans:
@@ -66,7 +74,7 @@ def xep0393_to_matrix_html(msg: str) -> str:
                         return f'~<del>{parse_span(m.group(2))}</del>~'
                     case '`':
                         return f'`<code>{m.group(2)}</code>`'
-            return re.sub(r'([*_~`])(.+?)\1',sub_tag,text)
+            return re.sub(r'([*_~`])(.+?)\1', sub_tag, text)
         return '<br>'.join(parse_span(html.escape(line)) for line in msg.split('\n'))
     for i, (parsed, message) in enumerate(staging):  # parse unparsed
         if len(message) == 0 or parsed:
