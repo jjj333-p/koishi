@@ -474,15 +474,15 @@ def naive_convert(f):
                 yield tok
             # handle single special characters:
             case '*':
-                yield r'\*'
+                yield '\u200B*\u200B'
             case '_':
-                yield r'\_'
+                yield '\u200B_\u200B'
             case '~':
-                yield r'\~'
+                yield '\u200B~\u200B'
             case '`':
-                yield r'\`'
+                yield '\u200B`\u200B'
             case '>':
-                yield r'\>'
+                yield '\u200B>'
             # unescape <>
             case ('gt', {}):
                 yield '>'
