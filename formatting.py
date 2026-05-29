@@ -232,6 +232,53 @@ def tokenize(f):
 
 
 @Pipe
+def extract_tag_attributes(f):
+    """
+    extract attributes from tags and turn into tuple[string,dict]
+    """
+
+    while True:
+        try:
+            tok = next(f)
+        except StopIteration:
+            break
+        if len(tok) <= 1:
+            yield tok
+            continue
+        # print(f'extract_tag_attributes {repr(tok)}')
+        tok = tok[1:-1]  # strip <>
+        try:
+            # if there is no space, index will throw a ValueError
+            idx = tok.index(' ')
+        except ValueError:  # no attributes
+            yield (tok, {})
+            continue  # skip further parsing
+        # print(f'extract_tag_attributes 2 {repr(tok)}')
+
+        name = tok[0:idx]
+        if tok[-1] == '/':  # carry over / from self closing tags
+            name += '/'
+            tok = tok[:-1]
+
+        if tok[0] == '/':  # closing tags shouldn't have attributes
+            yield (name, {})
+        tok = tok[idx + 1:]
+
+        tok += ' '  # makes the next step marginally easier
+
+        # attributes can thankfully be parsed with regex:
+        # /(\w+)(?:=('[^']+'|"[^"]+"|[^ ]+))? /
+        #  ^       ^^                        ^ space (ends attribute) (the reason for tok += ' ')
+        #  ^       ^^ value, possibly in quotes
+        #  ^       ^ equals
+        #  ^ key, composed of some number of word characters a-zA-Z0-9_
+        attrs = dict((m.group(1), m.group(2)) for m in re.finditer(
+            '(\\w+)(?:=(\'[^\']+\'|"[^"]+"|[^ ]+))? ', tok))
+
+        yield (name, attrs)
+
+
+@Pipe
 def mark_self_closing(f):
     """https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L34"""
     while True:
@@ -239,10 +286,9 @@ def mark_self_closing(f):
             tok = next(f)
         except StopIteration:
             break
-
         match tok:
-            case '<br>':
-                yield '<br/>'
+            case ('br', x):
+                yield ('br/', x)
             case _:
                 yield tok
 
@@ -253,31 +299,68 @@ def fix_tag_matching(f):
     pass 3: use stack to match tags and erase unmatched closing tags
     this makes sure tags match up, so e.g. <a><b>123</a></c> becomes <a><b>123</b></>
     https://git.qwertydotpl.us/qwerty/patches/src/commit/a1c1b2cf10179bd9e80290d71ced429905573b30/convert-matrix-formatted_body-to-xmpp-xep0393.py#L48
+
+    qwertydotplus 2026-05-28: made it also copy attributes from opening tag to closing tag
     """
     stack = []
+    halfstack = []  # version of stack with only tag names
     while True:
         try:
             tok = next(f)
         except StopIteration:
             while len(stack) > 0:
-                yield f'</{stack.pop()}>'
+                tag = stack.pop()
+                yield ('/' + tag[0], tag[1])
             break
-        if len(tok) == 1:  # char
+        if isinstance(tok, str):  # char
             yield tok  # skip
-        elif tok[-2] == '/':  # self-closing tag
+            continue
+        # print(f'fix_tag_matching {repr(tok)}')
+        name = tok[0]
+        if name[-1] == '/':  # self-closing tag
             yield tok  # skip
-        elif tok[1] == '/':  # closing tag
-            if tok[2:-1] in stack:  # exists in stack, unravel until we hit it
+        elif name[0] == '/':  # closing tag
+            if name[1:] in halfstack:  # exists in stack, unravel until we hit it
                 while True:
                     popped = stack.pop()
-                    yield f'</{popped}>'
-                    if popped == tok[2:-1]:
+                    halfstack.pop()
+                    yield ('/' + popped[0], popped[1])
+                    if popped[0] == name[1:]:
                         # we hit our tag, move on
                         break
             # else drop
         else:  # opening tag
             yield tok
-            stack.append(tok[1:-1])  # push
+            stack.append(tok)  # push
+            halfstack.append(name)
+
+
+@Pipe
+def rename_equivalents(f):
+    while True:
+        try:
+            tok = next(f)
+        except StopIteration:
+            break
+        if isinstance(tok, str):
+            yield tok
+            continue
+        # print(f'rename_equivalents {repr(tok)}')
+        name = tok[0]
+        cl = ''
+        if name[0] == '/':
+            name = name[1:]
+            cl = '/'
+        match name:
+            case 'i':
+                yield (cl + 'em', tok[1])
+            # functionally bold and underline exist for the same reason, and xmpp only supports the one (and honestly, who really uses underline anymore?)
+            case 'b' | 'u':
+                yield (cl + 'strong', tok[1])
+            case 's':
+                yield (cl + 'del', tok[1])
+            case _:
+                yield tok
 
 
 @Pipe
@@ -293,30 +376,33 @@ def drop_redundant(f):
             tok = next(f)
         except StopIteration:
             break
-        if len(tok) == 1:  # char
+        if isinstance(tok, str):  # char
             yield tok  # skip
-        elif tok[-2] == '/':  # self-closing tag
+            continue
+        # print(f'drop_redundant {repr(tok)}')
+        name = tok[0]
+        if name[-1] == '/':  # self-closing tag
             yield tok  # skip
-        elif tok[1] == '/':  # closing tag
+        elif name[0] == '/':  # closing tag
             if stack.pop() != '.':  # not irrelevant
                 yield tok  # output
         else:  # opening tag
-            match tok[1:-1]:
+            match name:
                 case 'em' | 'strong' | 'del':  # cannot be applied more than once
-                    if tok[1:-1] in stack:
+                    if name in stack:
                         stack.append('.')
                     else:
-                        stack.append(tok[1:-1])
+                        stack.append(name)
                         yield tok
                 # we drop code in pre (and vice versa) because it's easier to treat code as inline and pre as meaning codeblock (does anybody even use <pre> for anything other than code, anyway?)
                 case 'pre' | 'code':
                     if 'pre' in stack or 'code' in stack:
                         stack.append('.')
                     else:
-                        stack.append(tok[1:-1])
+                        stack.append(name)
                         yield tok
                 case _:
-                    stack.append(tok[1:-1])
+                    stack.append(name)
                     yield tok
 
 
@@ -331,21 +417,24 @@ def drop_bad_blocks(f):
             tok = next(f)
         except StopIteration:
             break
-        if len(tok) == 1:  # char
+        if isinstance(tok, str):  # char
             yield tok  # skip
-        elif tok[-2] == '/':  # self-closing tag
+            continue
+        # print(f'drop_bad_blocks {repr(tok)}')
+        name = tok[0]
+        if name[-1] == '/':  # self-closing tag
             yield tok  # skip
-        elif tok[1] == '/':  # closing tag
+        elif name[0] == '/':  # closing tag
             yield tok  # output
         else:  # opening tag
-            match tok[1:-1]:
+            match name:
                 case 'mx-reply':  # drop block
                     while True:
                         try:
                             tok = next(f)
                         except StopIteration:
                             break
-                        if tok == f'</{tok[1:-1]}>':
+                        if isinstance(tok, tuple) and tok[0] == '/' + name:
                             break
                 case _:
                     yield tok
@@ -363,13 +452,14 @@ def naive_convert(f):
     while True:
         try:
             tok = next(f)
+            # print(f'naive_convert {repr(tok)}')
         except StopIteration:
             break
         match tok:
             case '\n':
                 yield '\n' + '> ' * quote_level
-            # this handles characters when inside a code block
-            case _ if unformat and len(tok) == 1:
+            # this handles characters when inside a code block:
+            case _ if unformat and isinstance(tok, str):
                 yield tok
             # handle single special characters:
             case '*':
@@ -383,31 +473,32 @@ def naive_convert(f):
             case '>':
                 yield r'\>'
             # handle formatting toggles (this only works if we fixTagMatching and dropRedundant):
-            case '<em>' | '</em>':
+            case ('em' | '/em', _):
                 yield '_'
-            case '<strong>' | '</strong>':
+            case ('strong' | '/strong', _):
                 yield '*'
-            case '<del>' | '</del>':
+            case ('del' | '/del', _):
                 yield '~'
-            case '<code>' | '</code>':
+            case ('code' | '/code', _):
                 yield '`'
                 unformat = not unformat
-            case '<pre>' | '</pre>':
+            case ('pre' | '/pre', _):
                 yield '\n' + '> ' * quote_level + '```\n' + '> ' * quote_level
                 unformat = not unformat
             # handle blockquotes:
-            case '<blockquote>':
+            case ('blockquote', _):
                 quote_level += 1
                 yield '\n' + '> ' * quote_level
-            case '</blockquote>':
+            case ('/blockquote', _):
                 quote_level -= 1
                 yield '\n' + '> ' * quote_level
-            # skip paragraph and line break tags:
-            case '<p>' | '</p>' | '<br/>':
+            case ('p' | '/p' | 'br/', _):
+                yield '\n' + '> ' * quote_level
+            case ('/a', {'href': href}):
+                yield f' ({href})'
+            # drop unknown tags:
+            case (_, _):
                 pass
-            # if you want to drop unknown tags, uncomment the following:
-            # case _ if len(tok) > 0:
-            # pass
             # directly copy anything we didn't cover
             case _:
                 yield tok
@@ -423,8 +514,10 @@ def matrix_html_to_xep0393(message: str) -> str:
             message
             | to_iter
             | tokenize
+            | extract_tag_attributes
             | mark_self_closing
             | fix_tag_matching
+            | rename_equivalents
             | drop_redundant
             | drop_bad_blocks
             | naive_convert
@@ -433,19 +526,22 @@ def matrix_html_to_xep0393(message: str) -> str:
 
 
 if __name__ == "__main__":
-    message = "<p>test <em>italic</em> <strong>bold</strong> <del>strikethrough</del> <code>code</code></p>\n<pre><code>code\n</code></pre>\n<blockquote>\n<p>quote<br>\n<code>code</code></p>\n</blockquote>"
+    message = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass'>test link</a> <a>test closing attr</a href='fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>"
     print(
-        re.sub(
-            '\n((> )*\n)+', '\n',
-            "".join(
-                message
-                | to_iter
-                | tokenize
-                | mark_self_closing
-                | fix_tag_matching
-                | drop_redundant
-                | drop_bad_blocks
-                | naive_convert
-            )
-        )
+        matrix_html_to_xep0393(message)
     )
+    # this test should yield EXACTLY:
+    # pylint: disable=pointless-string-statement
+    '''
+    <test interrupted tag _*bold&italic test
+    br test link ('pass') test closing attr*_ ~strikethrough~
+    > 1 quote
+    > > 2 quotes
+    > > ```
+    > > code in
+    > > quotes
+    > > ```
+    paragraph 1
+    out of paragraph 1
+    paragraph 2
+    '''
