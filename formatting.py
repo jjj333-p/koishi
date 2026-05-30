@@ -58,7 +58,7 @@ def xep0393_to_matrix_html(msg: str) -> str:
                 escaped_lang = "py"
 
             attrs += f' class="language-{escaped_lang}"'
-        parsed_chunk = f'<pre><code{attrs}>{html.escape(code)}\n</code></pre>'
+        parsed_chunk = f'\n<pre><code{attrs}>{html.escape(code)}\n</code></pre>'
 
         staging.append((True, parsed_chunk))
         lastend = match.end()  # advance index
@@ -549,4 +549,4 @@ _*italics_ ~strikethrough~*_
 '''.strip()
     VERIFY = xep0393_to_matrix_html(TEST_MESSAGE)
     print(repr(VERIFY))
-    assert VERIFY.strip() == '_<em>*italics</em>_ ~<del>strikethrough</del>~*_<br><blockquote>1 quote<br><blockquote>2 quotes<br><pre><code class="language-py">code in\nquotes\n</code></pre></blockquote></blockquote>'
+    assert VERIFY.strip() == '_<em>*italics</em>_ ~<del>strikethrough</del>~*_<br><blockquote>1 quote<br><blockquote>2 quotes<br>\n<pre><code class="language-py">code in\nquotes\n</code></pre></blockquote></blockquote>'
