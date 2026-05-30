@@ -8,8 +8,6 @@ import html
 import re
 from pipe import Pipe
 
-_CODEBLOCK_REGEX = r'^```[ \t]*([^\n]*)\n([\s\S]*?)\n```$'
-
 
 def xep0393_to_matrix_html(msg: str) -> str:
     """
@@ -41,7 +39,8 @@ def xep0393_to_matrix_html(msg: str) -> str:
     # parse and mark code blocks:
     staging = []
     lastend = 0
-    for match in re.finditer(_CODEBLOCK_REGEX, msg, flags=re.MULTILINE):
+    CODEBLOCK_REGEX = r'^```[ \t]*([^\n]*)\n([\s\S]*?)\n```$'
+    for match in re.finditer(CODEBLOCK_REGEX, msg, flags=re.MULTILINE):
         # unparsed chunk
         staging.append((False, msg[lastend:match.start()]))
 
@@ -302,6 +301,40 @@ def rename_equivalents(f):
             case _:
                 yield tok
 
+@Pipe
+def merge_code_attrs(f):
+    """
+    merge attrs from <pre><code> onto <pre>
+    allows syntax highlighting in naive convert
+    """
+    out = []
+    parse_pre = 0  # this has to be an int, since we haven't dropped redundant tags yet
+    for tok in f:
+        match tok:
+            case ('pre',_):
+                parse_pre += 1
+                out.append(tok)
+            case _ if parse_pre <= 0:
+                yield tok
+            case ('/pre',_) if parse_pre > 1:  # not final </pre>
+                parse_pre -= 1
+                out.append(tok)
+            case ('/pre',_) if parse_pre == 1:  # final </pre>, no <code>
+                yield from out
+                yield tok
+                parse_pre = False
+            case ('code', code_attrs) if parse_pre > 0:  # code in pre, the thing we're actually looking for
+                (pre, pre_attrs) = out[0]
+                out[0] = (pre, pre_attrs | code_attrs)
+                yield from out  # dump our buffer
+                yield tok  # emit code tag
+                # reset state:
+                out = []
+                parse_pre = 0
+            case _ if parse_pre > 0:
+                out.append(tok)
+            case _:  # we shouldn't ever get here, because parse_pre<=0 and parse_pre>0 should cover all values of parse_pre
+                assert False
 
 @Pipe
 def drop_redundant(f):
@@ -425,12 +458,22 @@ def naive_convert(f):
                 yield '*'
             case ('del' | '/del', _):
                 yield '~'
-            case ('code' | '/code', _):
+            case (('code' | '/code') as name, _):
                 yield '`'
-                unformat = not unformat
-            case ('pre' | '/pre', _):
+                unformat = name[0] != '/'
+            case ('pre', attrs):
+                lang = ''
+                if 'class' in attrs:
+                    cls = attrs['class'].strip('\'"')
+                    if cls.startswith('language-'):
+                        lang = cls[9:]
+                    if lang == 'py':
+                        lang = 'python3'
+                yield newline() + f'```{lang}' + newline()
+                unformat = True
+            case ('/pre', _):
                 yield newline() + '```' + newline()
-                unformat = not unformat
+                unformat = False
             # handle blockquotes:
             case ('blockquote', _):
                 quote_level += 1
@@ -468,6 +511,7 @@ def matrix_html_to_xep0393(message: str) -> str:
             | mark_self_closing
             | fix_tag_matching
             | rename_equivalents
+            | merge_code_attrs
             | drop_redundant
             | drop_bad_blocks
             | naive_convert
@@ -476,7 +520,7 @@ def matrix_html_to_xep0393(message: str) -> str:
 
 
 if __name__ == "__main__":
-    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<test novalue><a href='https://matrix.to/'><endtag"
+    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code class='language-py'>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<test novalue><a href='https://matrix.to/'><endtag"
     VERIFY = matrix_html_to_xep0393(TEST_MESSAGE)
     print(VERIFY)
     assert VERIFY.strip() == '''
@@ -484,7 +528,7 @@ if __name__ == "__main__":
 br test link ( pass< ) test closing attr, pathological attr*_ ~strikethrough~
 > 1 quote
 > > 2 quotes
-> > ```
+> > ```python3
 > > code in
 > > quotes
 > > ```
