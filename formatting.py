@@ -48,6 +48,7 @@ def xep0393_to_matrix_html(msg: str) -> str:
         lang = match.group(1).strip()
         code = match.group(2)
 
+        attrs = ''
         # If a language was specified, add it as a CSS class (standard Markdown behavior)
         if lang:
             escaped_lang = html.escape(lang)
@@ -56,9 +57,8 @@ def xep0393_to_matrix_html(msg: str) -> str:
             if escaped_lang.startswith("python"):
                 escaped_lang = "py"
 
-            parsed_chunk = f'<pre><code class="language-{escaped_lang}">{html.escape(code)}</code></pre>'
-        else:
-            parsed_chunk = f'<pre><code>{html.escape(code)}</code></pre>'
+            attrs += f' class="language-{escaped_lang}"'
+        parsed_chunk = f'<pre><code{attrs}>{html.escape(code)}\n</code></pre>'
 
         staging.append((True, parsed_chunk))
         lastend = match.end()  # advance index
@@ -537,3 +537,16 @@ out of paragraph 1
 paragraph 2
 test<\u200b>&escape<endtag
 '''.strip('\n')
+    print('\n\n---\n\n')
+    TEST_MESSAGE = '''
+_*italics_ ~strikethrough~*_
+> 1 quote
+> > 2 quotes
+> > ```python3
+> > code in
+> > quotes
+> > ```
+'''.strip()
+    VERIFY = xep0393_to_matrix_html(TEST_MESSAGE)
+    print(repr(VERIFY))
+    assert VERIFY.strip() == '_<em>*italics</em>_ ~<del>strikethrough</del>~*_<br><blockquote>1 quote<br><blockquote>2 quotes<br><pre><code class="language-py">code in\nquotes\n</code></pre></blockquote></blockquote>'
