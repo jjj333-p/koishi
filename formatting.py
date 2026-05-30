@@ -502,7 +502,7 @@ def matrix_html_to_xep0393(message: str) -> str:
     https://git.qwertydotpl.us/qwerty/patches/src/branch/main/convert-matrix-formatted_body-to-xmpp-xep0393.py#L150
     """
     return re.sub(
-        '\n((> )*\n)+', '\n',
+        '\n((> ?)*\n)+', '\n',
         "".join(
             message
             | to_iter
@@ -516,7 +516,7 @@ def matrix_html_to_xep0393(message: str) -> str:
             | drop_bad_blocks
             | naive_convert
         )
-    )
+    ).strip()
 
 
 if __name__ == "__main__":
