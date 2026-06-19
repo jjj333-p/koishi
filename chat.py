@@ -11,7 +11,7 @@ import mimetypes
 import html
 
 # matrix library
-from nio import MatrixRoom, RoomMessageText, RoomMessageMedia, Receipt, RedactionEvent, RoomSendResponse
+from nio import MatrixRoom, RoomMessageText, RoomMessageMedia, Receipt, RedactionEvent, RoomSendResponse, RoomSendError
 # import a psycopg error
 from slixmpp import stanza, JID
 from slixmpp.types import PresenceArgs
@@ -51,6 +51,7 @@ class KoishiRoom:
         self.matrix_queue_lock = asyncio.Lock()
 
         self.bridged_stanzaid: set[str] = set()
+        self.xmpp_error_ids: set[str] = set()
         self.bridged_mx_eventid: set[str] = set()
 
         self.bridged_jnics: set[str] = set()
@@ -175,7 +176,8 @@ class KoishiRoom:
 
         # closure for consistent error handling
         async def send_error(error_str: str, fallback_txt: str = '') -> None:
-            self.xmpp['xep_0461'].make_reply(
+            err_id = str(uuid.uuid4())
+            err_msg = self.xmpp['xep_0461'].make_reply(
                 msg_from,
                 stanza_id,
                 fallback_txt,
@@ -183,9 +185,16 @@ class KoishiRoom:
                 mbody=error_str,
                 mtype='groupchat',
                 mfrom=self.xmpp.boundjid.bare,
-            ).send()
+            )
+            err_msg.set_id(err_id)
+            self.xmpp_error_ids.add(err_id)
+            err_msg.send()
 
         async with self.xmpp_queue_lock:
+
+            if msg['id'] in self.xmpp_error_ids:
+                return
+
             # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
             if stanza_id in self.bridged_stanzaid:
                 return
@@ -282,6 +291,13 @@ class KoishiRoom:
                     )
                     return
 
+                if type(resp) == RoomSendError:
+                    await send_error(
+                        f"Could not bridge, got back a room send error\n{resp}",
+                        body
+                    )
+                    return
+
                 self.xmpp['xep_0333'].send_marker(
                     mto=self.muc_jid_str,
                     id=stanza_id,
@@ -302,7 +318,7 @@ class KoishiRoom:
                     return
                 except Exception as e:
                     await send_error(
-                        f"could not bridge message because of database error of type {type(e)}\n{e}",
+                        f"could not bridge message because of database error of type {type(e)}\n{e}\n{str(msg)}",
                         body
                     )
                     return
@@ -330,7 +346,7 @@ class KoishiRoom:
 
                 except Exception as e:
                     await send_error(
-                        f"could not bridge message because of database error of type {type(e)}\n{e}",
+                        f"could not bridge message because of database error of type {type(e)}\n{e}\n{str(msg)}",
                         body
                     )
                     return
@@ -391,6 +407,13 @@ class KoishiRoom:
                     )
                     return
 
+                if type(resp) == RoomSendError:
+                    await send_error(
+                        f"Could not bridge, got back a room send error\n{resp}",
+                        body
+                    )
+                    return
+
                 self.xmpp['xep_0333'].send_marker(
                     mto=self.muc_jid_str,
                     id=stanza_id,
@@ -403,7 +426,7 @@ class KoishiRoom:
                     await self.db.set_mtrx_eventid(resp.event_id, stanza_id)
                 except Exception as e:
                     await send_error(
-                        f"could not bridge message because of database error of type {type(e)}\n{e}",
+                        f"could not bridge message because of database error of type {type(e)}\n{e}\n{str(msg)}",
                         body
                     )
                     return
@@ -437,7 +460,8 @@ class KoishiRoom:
 
         # closure for consistent error handling
         async def send_error(error_str: str, fallback_txt: str = '') -> None:
-            self.xmpp['xep_0461'].make_reply(
+            err_id = str(uuid.uuid4())
+            err_msg = self.xmpp['xep_0461'].make_reply(
                 msg_from,
                 stanza_id,
                 fallback_txt,
@@ -445,9 +469,13 @@ class KoishiRoom:
                 mbody=error_str,
                 mtype='groupchat',
                 mfrom=self.xmpp.boundjid.bare,
-            ).send()
+            )
+            err_msg.set_id(err_id)
+            self.xmpp_error_ids.add(err_id)
+            err_msg.send()
 
         async with self.xmpp_queue_lock:
+
             # delete record in db
             result = None
             try:
