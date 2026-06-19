@@ -35,7 +35,9 @@ class KoishiMatrixClient:
         """Route text messages to appropriate room handler"""
         handler = self.room_handlers.get(room.room_id)
         if handler:
-            task = asyncio.create_task(handler.handle_matrix_text_message(room, event))
+            task = asyncio.create_task(
+                handler.handle_matrix_text_message(room, event)
+            )
             self.background_tasks.add(task)
             task.add_done_callback(self.background_tasks.discard)
 
@@ -43,7 +45,9 @@ class KoishiMatrixClient:
         """Route media messages to appropriate room handler"""
         handler = self.room_handlers.get(room.room_id)
         if handler:
-            task = asyncio.create_task(handler.handle_matrix_media_message(room, event))
+            task = asyncio.create_task(
+                handler.handle_matrix_media_message(room, event)
+            )
             self.background_tasks.add(task)
             task.add_done_callback(self.background_tasks.discard)
 
@@ -51,7 +55,9 @@ class KoishiMatrixClient:
         """Route redactions to appropriate room handler"""
         handler = self.room_handlers.get(room.room_id)
         if handler:
-            task = asyncio.create_task(handler.handle_matrix_redaction(room, event))
+            task = asyncio.create_task(
+                handler.handle_matrix_redaction(room, event)
+            )
             self.background_tasks.add(task)
             task.add_done_callback(self.background_tasks.discard)
 
@@ -70,7 +76,9 @@ class KoishiMatrixClient:
             if event.user_id == self.mxid:
                 continue
 
-            task = asyncio.create_task(handler.handle_matrix_receipt(room, event))
+            task = asyncio.create_task(
+                handler.handle_matrix_receipt(room, event)
+            )
             self.background_tasks.add(task)
             task.add_done_callback(self.background_tasks.discard)
 
@@ -128,7 +136,7 @@ class KoishiMatrixClient:
         if not self.client:
             raise RuntimeError("Matrix client not connected")
         return await self.client.room_read_markers(*args, **kwargs)
-    
+
     async def join(self, room_id: str):
         """Join a Matrix room"""
         if not self.client:
