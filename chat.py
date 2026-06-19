@@ -318,7 +318,7 @@ class KoishiRoom:
                     return
                 except Exception as e:
                     await send_error(
-                        f"could not bridge message because of database error of type {type(e)}\n{e}\n{str(msg)}",
+                        f"could not bridge message because of database error of type {type(e)}\n{e}",
                         body
                     )
                     return
@@ -346,7 +346,7 @@ class KoishiRoom:
 
                 except Exception as e:
                     await send_error(
-                        f"could not bridge message because of database error of type {type(e)}\n{e}\n{str(msg)}",
+                        f"could not bridge message because of database error of type {type(e)}\n{e}",
                         body
                     )
                     return
@@ -426,7 +426,7 @@ class KoishiRoom:
                     await self.db.set_mtrx_eventid(resp.event_id, stanza_id)
                 except Exception as e:
                     await send_error(
-                        f"could not bridge message because of database error of type {type(e)}\n{e}\n{str(msg)}",
+                        f"could not bridge message because of database error of type {type(e)}\n{e}",
                         body
                     )
                     return
