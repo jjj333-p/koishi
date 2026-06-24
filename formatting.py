@@ -93,7 +93,7 @@ def xep0393_to_matrix_html(msg: str) -> str:
                         return f'~<del>{parse_span(m.group(2))}</del>~'
                     case '`':
                         return f'`<code>{m.group(2)}</code>`'
-            return re.sub(r'([*_~`])(.+?)\1', sub_tag, text)
+            return re.sub(r'(?<!\w)([*_~`])(.+?)\1(?!\w)', sub_tag, text)
         return '<br>'.join(parse_span(html.escape(line)) for line in msg.split('\n'))
     for i, (parsed, message) in enumerate(staging):  # parse unparsed
         if len(message) == 0 or parsed:
@@ -539,7 +539,7 @@ test<\u200b>&escape<endtag
 '''.strip('\n')
     print('\n\n---\n\n')
     TEST_MESSAGE = '''
-_*italics_ ~strikethrough~*_
+_*italics_ ~strikethrough~*_ word_boundary_test
 > 1 quote
 > > 2 quotes
 > > ```python3
@@ -549,4 +549,4 @@ _*italics_ ~strikethrough~*_
 '''.strip()
     VERIFY = xep0393_to_matrix_html(TEST_MESSAGE)
     print(repr(VERIFY))
-    assert VERIFY.strip() == '_<em>*italics</em>_ ~<del>strikethrough</del>~*_<br><blockquote>1 quote<br><blockquote>2 quotes<br>\n<pre><code class="language-py">code in\nquotes\n</code></pre></blockquote></blockquote>'
+    assert VERIFY.strip() == '_<em>*italics</em>_ ~<del>strikethrough</del>~*_ word_boundary_test<br><blockquote>1 quote<br><blockquote>2 quotes<br>\n<pre><code class="language-py">code in\nquotes\n</code></pre></blockquote></blockquote>'
