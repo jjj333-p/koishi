@@ -527,7 +527,7 @@ class KoishiRoom:
                         f"Bridge fs error during moderation: {type(e).__name__}: {e}"
                     )
 
-    async def join_xmpp_puppet_for_matrix(self, room: MatrixRoom, mxid: str, jid: str, nick: str, join_anyways: bool):
+    async def join_xmpp_puppet_for_matrix(self, mxid: str, jid: str, nick: str, join_anyways: bool):
         cached_nick = self.cached_bridged_jnics.get(mxid)
 
         if join_anyways or nick != cached_nick or not jid in self.bridged_jids:
@@ -547,6 +547,15 @@ class KoishiRoom:
                 timeout=15
             )
             print("joined", nick)
+
+            await self.xmpp.plugin['xep_0045'].set_role(
+                room=self.muc_jid,
+                nick=nick,              # CRITICAL: Use the MUC nickname, not the bare JID
+                role='participant',     # 'moderator', 'participant', 'visitor', or 'none'
+                reason='Automated bridge puppet assignment',
+                ifrom=self.xmpp.boundjid.bare
+            )
+            print("Puppet role granted successfully.")
 
             self.cached_bridged_jnics[mxid] = nick
             self.bridged_jnics.add(nick)
@@ -606,7 +615,7 @@ class KoishiRoom:
 
             try:
                 await self.join_xmpp_puppet_for_matrix(
-                    room, event.sender, user_jid, f"{new_bridged_nick} [Matrix]",
+                    event.sender, user_jid, f"{new_bridged_nick} [Matrix]",
                     event.body.startswith("!join")
                 )
             except TimeoutError as _:
@@ -755,7 +764,7 @@ class KoishiRoom:
 
             try:
                 await self.join_xmpp_puppet_for_matrix(
-                    room, event.sender, user_jid, f"{new_bridged_nick} [Matrix]",
+                    event.sender, user_jid, f"{new_bridged_nick} [Matrix]",
                     event.body.startswith("!join")
                 )
             except TimeoutError as _:
