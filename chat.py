@@ -589,6 +589,16 @@ class KoishiRoom:
         )
         sanitized_body = util.illegal_xml_chars_regex.sub('', body_for_xmpp)
 
+        # get relation, related event id, and type of relation
+        mx_relation = event.source \
+            .get('content', {}) \
+            .get("m.relates_to", {})
+        mx_relation_id = mx_relation \
+            .get("m.in_reply_to", mx_relation) \
+            .get("event_id", None)
+        mx_relation_type = mx_relation \
+            .get("rel_type", "reply" if mx_relation_id is not None else None)
+
         async def send_error(error_str: str):
             await self.matrix.room_send(
                 room_id=room.room_id,
@@ -641,19 +651,14 @@ class KoishiRoom:
 
             self.bridged_mx_eventid.add(event.event_id)
 
-            mx_reply_to_id = event.source \
-                .get('content', {}) \
-                .get("m.relates_to", {}) \
-                .get("m.in_reply_to", {}) \
-                .get("event_id", None)
-
             result = None
             stanza_id = None
             reply_jid = None
             content = None
-            if mx_reply_to_id:
+            # TODO: split this out to different versions for reply, edit, etc.; probably with a match/case or smth
+            if mx_relation_type == "reply":
                 try:
-                    result = await self.db.get_xmpp_reply_data(mx_reply_to_id)
+                    result = await self.db.get_xmpp_reply_data(mx_relation_id)
                 except Exception as e:
                     print(e)
 
