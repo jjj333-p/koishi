@@ -407,6 +407,37 @@ def drop_bad_blocks(f):
                 case _:
                     yield tok
 
+@Pipe
+def unravel_links(f):
+    """
+    unravel <a href> into pure text
+    shortens links with href matching content for brevity
+    """
+
+    link_content = None
+    for tok in f:
+        match tok:
+            case ('a', _):
+                link_content = []
+            case ('/a', {'href': href}):
+                # extract_tag_attributes doesn't strip out quotes, so we strip them here:
+                sanitized_href = href.strip('\'"')
+                yield from link_content
+                # if the link shouldn't be skipped:
+                if not (sanitized_href.startswith("https://matrix.to/") \
+                    or sanitized_href == "".join(link_content | naive_convert) ):
+                    yield f' ( {sanitized_href} )'
+                link_content = None
+            case ('/a', _):
+                yield from link_content
+                yield tok
+                link_content = None
+            case _:
+                if link_content is not None:
+                    link_content.append(tok)
+                else:
+                    yield tok
+
 
 @Pipe
 def naive_convert(f):
@@ -483,12 +514,6 @@ def naive_convert(f):
                 yield newline()
             case ('p' | '/p' | 'br/', _):
                 yield newline()
-            case ('/a', {'href': href}):
-                # extract_tag_attributes doesn't strip out quotes, so we strip them here:
-                sanitized_href = href.strip('\'"')
-                if sanitized_href.startswith("https://matrix.to/"):
-                    continue
-                yield f' ( {sanitized_href} )'
             # drop unknown tags:
             case (_, _):
                 print("dropping", tok)
@@ -514,13 +539,14 @@ def matrix_html_to_xep0393(message: str) -> str:
             | merge_code_attrs
             | drop_redundant
             | drop_bad_blocks
+            | unravel_links
             | naive_convert
         )
     ).strip()
 
 
 if __name__ == "__main__":
-    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code class='language-py'>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<test novalue><a href='https://matrix.to/'><endtag"
+    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code class='language-py'>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<test novalue> <a href='https://example.org'>https://example.org</a> <a href='https://example.org'>example</a> <a href='https://matrix.to/'><endtag"
     VERIFY = matrix_html_to_xep0393(TEST_MESSAGE)
     print(VERIFY)
     assert VERIFY.strip() == '''
@@ -535,7 +561,7 @@ br test link ( pass< ) test closing attr, pathological attr*_ ~strikethrough~
 paragraph 1
 out of paragraph 1
 paragraph 2
-test<\u200b>&escape<endtag
+test<\u200b>&escape https://example.org example ( https://example.org ) <endtag
 '''.strip('\n')
     print('\n\n---\n\n')
     TEST_MESSAGE = '''
