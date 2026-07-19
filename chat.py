@@ -207,9 +207,24 @@ class KoishiRoom:
 
             # get reply mapping from db
             xmpp_replyto_id = msg.get('reply', {}).get('id')
+            xmpp_replace_id = msg.get('replace', {}).get('id')
             matrix_replyto_id = None
+            matrix_replace_id = None
             replyto_mxid = None
             result = None
+
+            if xmpp_replace_id:
+                try:
+                    result = await self.db.get_matrix_event_by_client_id(xmpp_replace_id, str(msg['from']))
+                except Exception as e:
+                    print(e)
+            if result:
+                if len(result) > 1:
+                    matrix_replace_id, *_ = result
+                else:
+                    matrix_replace_id = result[0]
+                result = None
+
             if xmpp_replyto_id:
                 try:
                     result = await self.db.get_matrix_reply_data(xmpp_replyto_id)
@@ -255,9 +270,9 @@ class KoishiRoom:
                         message_type="m.room.message",
                         content={
                             "msgtype": "m.text",
-                            "body": matrix_body,
+                            "body": f"* {matrix_body}" if matrix_replace_id else matrix_body,
                             "format": "org.matrix.custom.html",
-                            "formatted_body": matrix_formatted_body,
+                            "formatted_body": f"* {matrix_formatted_body}" if matrix_replace_id else matrix_formatted_body,
                             "com.beeper.per_message_profile": {
                                 "id": str(msg['from']),
                                 "displayname": msg['from'].resource,
@@ -275,12 +290,25 @@ class KoishiRoom:
                             ),
                             ** (
                                 {
-                                    "m.relates_to": {
-                                        "m.in_reply_to": {
-                                            "event_id": matrix_replyto_id
-                                        },
+                                    "m.new_content": {
+                                        "msgtype": "m.text",
+                                        "body": matrix_body,
+                                        "format": "org.matrix.custom.html",
+                                        "formatted_body": matrix_formatted_body,
                                     },
-                                } if matrix_replyto_id else {}
+                                    "m.relates_to": {
+                                        "rel_type": "m.replace",
+                                        "event_id": matrix_replace_id
+                                    },
+                                } if matrix_replace_id else (
+                                    {
+                                        "m.relates_to": {
+                                            "m.in_reply_to": {
+                                                "event_id": matrix_replyto_id
+                                            },
+                                        },
+                                    } if matrix_replyto_id else {}
+                                )
                             ),
                         }
                     )
@@ -309,6 +337,7 @@ class KoishiRoom:
                 try:
                     await self.db.insert_message_mapping(
                         stanza_id,
+                        msg['id'],
                         resp.event_id,
                         body,
                         str(msg['from'])
@@ -336,8 +365,12 @@ class KoishiRoom:
 
                 try:
                     await self.db.insert_xmpp_media_message_mapping(
-                        stanza_id, attachment_url, file_id,
-                        body, msg['from']
+                        stanza_id,
+                        msg['id'],
+                        attachment_url,
+                        file_id,
+                        body,
+                        msg['from']
                     )
 
                 # using errors to prevent duplicate message
@@ -581,11 +614,15 @@ class KoishiRoom:
         new_bridged_nick = new_bridged_muc_jid.resource
 
         matrix_content = event.source.get('content', {})
+
+        if "m.new_content" in matrix_content:
+            matrix_content = matrix_content["m.new_content"]
+
         formatted_body = matrix_content.get('formatted_body')
         body_for_xmpp = (
             matrix_html_to_xep0393(formatted_body)
             if matrix_content.get('format') == "org.matrix.custom.html" and formatted_body
-            else event.body
+            else matrix_content.get('body', event.body)
         )
         sanitized_body = util.illegal_xml_chars_regex.sub('', body_for_xmpp)
 
@@ -656,7 +693,7 @@ class KoishiRoom:
             reply_jid = None
             content = None
             # TODO: split this out to different versions for reply, edit, etc.; probably with a match/case or smth
-            if mx_relation_type == "reply":
+            if mx_relation_type == "reply" or mx_relation_type == "m.replace":
                 try:
                     result = await self.db.get_xmpp_reply_data(mx_relation_id)
                 except Exception as e:
@@ -668,7 +705,17 @@ class KoishiRoom:
                 else:
                     stanza_id = result[0]
 
-            if stanza_id:
+            if mx_relation_type == "m.replace" and stanza_id:
+
+                message: stanza.Message = self.xmpp.make_message(
+                    mto=self.muc_jid,
+                    mbody=sanitized_body,
+                    mtype='groupchat',
+                    mfrom=user_jid,
+                )
+                message['replace']['id'] = mx_relation_id
+
+            elif stanza_id:
 
                 message: stanza.Message = self.xmpp['xep_0461'].make_reply(
                     reply_jid or f"{self.muc_jid_str}/",
@@ -733,7 +780,7 @@ class KoishiRoom:
         body_for_xmpp = (
             matrix_html_to_xep0393(formatted_body)
             if matrix_content.get('format') == "org.matrix.custom.html" and formatted_body
-            else event.body
+            else matrix_content.get('body', event.body)
         )
         sanitized_body = util.illegal_xml_chars_regex.sub('', body_for_xmpp)
 

@@ -55,6 +55,7 @@ class KoishiComponent(ComponentXMPP):
         self.register_plugin('xep_0422')  # Message Fastening
         self.register_plugin('xep_0424')  # Message Retraction
         self.register_plugin('xep_0425')  # Message Moderation
+        self.register_plugin('xep_0308')  # Message corrections
         self.register_plugin('xep_0012')  # Last Activity / Uptime
 
         self.matrix_side = None

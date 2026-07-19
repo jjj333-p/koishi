@@ -28,6 +28,8 @@ Licensed under AGPLv3
         - download and re-serve matrix media to a url for XMPP
     - read receipt on matrix side to confirm delivery to XMPP
     - read receipt bridging from Matrix to XMPP
+- Corrections/edits
+- automatic voicing of puppets
 - bridging of moderations/redactions
     - TODO: ensure server support
 - configuration of bridging multiple rooms (TODO: document)
@@ -39,13 +41,13 @@ Licensed under AGPLv3
 ## TODO:
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
-- automatically disambiguate puppets if theres duplicate nicks on matrix side
+- XMPP -> Matrix replies need to resolve if its a correction and reply to the original event
+- automatically disambiguate puppets if theres duplicate nicks on matrix side (low-med)
 - bridge leaves from matrix to xmpp (lowish)
 - Bridge Bans (medium)
 - Bridge Reactions (difficult, requires storing in db due to different formats)
     - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
 - When bridging message deletions, ensure server support
-- automatic voicing of puppets (medium)
 - Add puppeting on Matrix side (VERY HIGH)
     - bridge read receipts XMPP -> Matrix
     - use puppet to let matrix auth verify retractions
