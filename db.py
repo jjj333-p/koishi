@@ -10,14 +10,14 @@ being called "media mappings" its basically the mapping of messages and all the 
 It looks scary but not much else will be added. could be split to several tables but not much need
 to at this time.
 
-koishi=# \dt
+koishi=# \\dt
                List of tables
  Schema |      Name      | Type  |  Owner   
 --------+----------------+-------+----------
  public | media_mappings | table | postgres
 (1 row)
 
-koishi=# \d media_mappings
+koishi=# \\d media_mappings
                                  Table "public.media_mappings"
           Column          |           Type           | Collation | Nullable |      Default      
 --------------------------+--------------------------+-----------+----------+-------------------
