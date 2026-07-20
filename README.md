@@ -29,6 +29,7 @@ Licensed under AGPLv3
     - read receipt on matrix side to confirm delivery to XMPP
     - read receipt bridging from Matrix to XMPP
 - Corrections/edits
+    - XMPP -> Matrix replies resolve if its a correction and reply to the original event
 - automatic voicing of puppets
 - bridging of moderations (XMPP), Retractions (XMPP), and Redactions (Matrix)
     - TODO: ensure server support
@@ -41,7 +42,6 @@ Licensed under AGPLv3
 ## TODO:
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
-- XMPP -> Matrix replies need to resolve if its a correction and reply to the original event
 - automatically disambiguate puppets if theres duplicate nicks on matrix side (low-med)
 - bridge leaves from matrix to xmpp (lowish)
 - Bridge Bans (medium)

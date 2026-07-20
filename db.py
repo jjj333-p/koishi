@@ -14,8 +14,9 @@ koishi=# \\dt
                List of tables
  Schema |      Name      | Type  |  Owner   
 --------+----------------+-------+----------
+ public | edit_mappings      | table | postgres
  public | media_mappings | table | postgres
-(1 row)
+(2 rows)
 
 koishi=# \\d media_mappings
                                  Table "public.media_mappings"
@@ -49,6 +50,16 @@ Indexes:
     "idx_unique_xmpp_id" UNIQUE, btree (xmpp_message_id)
 Check constraints:
     "check_at_least_one_id" CHECK (xmpp_message_id IS NOT NULL OR matrix_message_id IS NOT NULL)
+
+koishi=# \\d edit_mappings
+                Table "public.edit_mappings"
+       Column        | Type | Collation | Nullable | Default 
+---------------------+------+-----------+----------+---------
+ edit_message_id     | text |           | not null | 
+ original_message_id | text |           | not null | 
+Indexes:
+    "edit_mappings_pkey" PRIMARY KEY, btree (edit_message_id)
+    "idx_edit_mappings_original" btree (original_message_id)
 
 koishi=# 
 """
@@ -228,12 +239,53 @@ class KoishiDB:
         self, xmpp_stanza_id: str
     ) -> tuple[str | None, str | None] | None:
         """
-        "SELECT matrix_message_id, user_mxid FROM media_mappings WHERE xmpp_message_id = xmpp_stanza_id"
+        Fetches the Matrix event ID and user MXID for a given XMPP stanza ID.
+        If the ID is an edit, it routes the lookup through the client ID of the original message.
+
+        WITH edit_lookup AS (
+            SELECT original_message_id 
+            FROM edit_mappings 
+            WHERE edit_message_id = %s
+        )
+        SELECT matrix_message_id, user_mxid 
+        FROM media_mappings 
+        WHERE (
+            EXISTS (SELECT 1 FROM edit_lookup) AND (
+                    xmpp_client_id = (SELECT original_message_id FROM edit_lookup)
+                    OR
+                    matrix_message_id = (SELECT original_message_id FROM edit_lookup)
+                )
+            OR (
+                NOT EXISTS (
+                    SELECT 1 FROM edit_lookup
+                ) AND xmpp_message_id = %s
+            )
+        )
         """
         async with self.db_pool.connection() as conn:
             cursor = await conn.execute(
-                "SELECT matrix_message_id, user_mxid FROM media_mappings WHERE xmpp_message_id = %s",
-                (xmpp_stanza_id,)
+                """
+                WITH edit_lookup AS (
+                    SELECT original_message_id 
+                    FROM edit_mappings 
+                    WHERE edit_message_id = %s
+                )
+                SELECT matrix_message_id, user_mxid 
+                FROM media_mappings 
+                WHERE (
+                    EXISTS (SELECT 1 FROM edit_lookup) AND (
+                            xmpp_client_id = (SELECT original_message_id FROM edit_lookup)
+                            OR
+                            matrix_message_id = (SELECT original_message_id FROM edit_lookup)
+                        )
+                    OR (
+                        NOT EXISTS (
+                            SELECT 1 FROM edit_lookup
+                        ) AND xmpp_message_id = %s
+                    )
+                )
+                """,
+                (xmpp_stanza_id, xmpp_stanza_id)
             )
 
             return await cursor.fetchone()
@@ -298,10 +350,41 @@ class KoishiDB:
                 (stanzaid, client_id, url, file_id, body, str(jid), occupant_id),
             )
 
+    async def insert_edit_mapping(self, edit_id: str, original_id: str) -> None:
+        """
+        Maps an edit's unique ID back to the root message's ID.
+        Useful for resolving replies made to intermediate corrections.
+
+        INSERT INTO edit_mappings (edit_message_id, original_message_id) 
+        VALUES (edit_id, original_id)
+        ON CONFLICT (edit_message_id) DO NOTHING
+        """
+        async with self.db_pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO edit_mappings (edit_message_id, original_message_id) 
+                VALUES (%s, %s)
+                ON CONFLICT (edit_message_id) DO NOTHING
+                """,
+                (edit_id, original_id),
+            )
+
     async def get_matrix_event_by_client_id(self, client_id: str, user_jid: str, occupant_id: str | None = None):
         """
         Fetch the matrix_message_id associated with a specific XMPP client ID 
         and sender JID/Occupant ID (preferred), handling potential ID collisions.
+
+        SELECT matrix_message_id 
+        FROM media_mappings 
+        WHERE xmpp_client_id = client_id AND occupant_id = occupant_id
+        ORDER BY created_at DESC 
+        LIMIT 1
+
+        SELECT matrix_message_id 
+        FROM media_mappings 
+        WHERE xmpp_client_id = client_id AND user_jid = user_jid
+        ORDER BY created_at DESC 
+        LIMIT 1
         """
         async with self.db_pool.connection() as conn:
             async with conn.cursor() as cur:
@@ -339,6 +422,16 @@ class KoishiDB:
         """
         Fetches metadata for a retraction, validating ownership directly in the SQL query.
         Returns the data needed to perform the redaction and clean up the filesystem.
+
+        SELECT xmpp_message_id, matrix_message_id, path 
+        FROM media_mappings 
+        WHERE xmpp_message_id = %s AND occupant_id = %s
+        LIMIT 1
+
+        SELECT xmpp_message_id, matrix_message_id, path 
+        FROM media_mappings 
+        WHERE xmpp_message_id = %s AND user_jid = %s
+        LIMIT 1
         """
         async with self.db_pool.connection() as conn:
             async with conn.cursor() as cur:

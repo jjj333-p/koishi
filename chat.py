@@ -158,9 +158,13 @@ class KoishiRoom:
         if stanza_id is None:
             return
 
+        xmpp_replace_id = msg.get('replace', {}).get('id')
+
         if msg.get('id', '') in self.bridged_mx_eventid:
             try:
                 await self.db.set_xmpp_stanzaid(stanza_id, msg.get('id', ''))
+                if xmpp_replace_id:
+                    await self.db.insert_edit_mapping(stanza_id, xmpp_replace_id)
             except Exception as e:
                 print(e)
             finally:
@@ -276,7 +280,6 @@ class KoishiRoom:
 
             # get reply mapping from db
             xmpp_replyto_id = msg.get('reply', {}).get('id')
-            xmpp_replace_id = msg.get('replace', {}).get('id')
             matrix_replyto_id = None
             matrix_replace_id = None
             replyto_mxid = None
@@ -409,6 +412,9 @@ class KoishiRoom:
                         msg['from'],
                         occupant_id
                     )
+
+                    if xmpp_replace_id:
+                        await self.db.insert_edit_mapping(stanza_id, xmpp_replace_id)
                 except UniqueViolation as _:
                     # this is working as intended as to not duplicate messages
                     return
@@ -440,6 +446,9 @@ class KoishiRoom:
                         msg['from'],
                         occupant_id
                     )
+
+                    if xmpp_replace_id:
+                        await self.db.insert_edit_mapping(stanza_id, xmpp_replace_id)
 
                 # using errors to prevent duplicate message
                 except UniqueViolation as _:
