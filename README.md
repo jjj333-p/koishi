@@ -30,7 +30,7 @@ Licensed under AGPLv3
     - read receipt bridging from Matrix to XMPP
 - Corrections/edits
 - automatic voicing of puppets
-- bridging of moderations/redactions
+- bridging of moderations (XMPP), Retractions (XMPP), and Redactions (Matrix)
     - TODO: ensure server support
 - configuration of bridging multiple rooms (TODO: document)
 <img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
