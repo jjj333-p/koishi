@@ -333,6 +333,45 @@ class KoishiDB:
                 result = await cur.fetchone()
                 return result
 
+    async def get_retraction_data(self, stanza_id: str, user_jid: str, occupant_id: str | None = None) -> dict | None:
+        """
+        Fetches metadata for a retraction, validating ownership directly in the SQL query.
+        Returns the data needed to perform the redaction and clean up the filesystem.
+        """
+        async with self.db_pool.connection() as conn:
+            async with conn.cursor() as cur:
+                if occupant_id:
+                    await cur.execute(
+                        """
+                        SELECT xmpp_message_id, matrix_message_id, path 
+                        FROM media_mappings 
+                        WHERE xmpp_message_id = %s 
+                          AND (occupant_id = %s OR (occupant_id IS NULL AND user_jid = %s))
+                        LIMIT 1
+                        """,
+                        (stanza_id, occupant_id, user_jid)
+                    )
+                else:
+                    await cur.execute(
+                        """
+                        SELECT xmpp_message_id, matrix_message_id, path 
+                        FROM media_mappings 
+                        WHERE xmpp_message_id = %s AND user_jid = %s
+                        LIMIT 1
+                        """,
+                        (stanza_id, user_jid)
+                    )
+                row = await cur.fetchone()
+
+                if not row:
+                    return None
+
+                return {
+                    "stanza_id": row[0],
+                    "event_id": row[1],
+                    "path": row[2]
+                }
+
     async def delete_media(self, stanza_id: str = None, event_id: str = None) -> dict | None:
         """
         Deletes a record based on xmpp_message_id or matrix_message_id.

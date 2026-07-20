@@ -204,9 +204,75 @@ class KoishiRoom:
             self.bridged_stanzaid.add(stanza_id)
 
             # ignore all puppets
-            # TODO clean this up
             if msg_from.resource in self.bridged_jnics or msg_from.bare in self.bridged_jids:
                 return
+
+            # wait for connection
+            await self.matrix.connected.wait()
+
+            # ==========================================
+            # HANDLE USER RETRACTIONS (XEP-0424)
+            # ==========================================
+            retract_target_id = msg['retract']['id']
+
+            if retract_target_id:
+                try:
+                    orig_msg = await self.db.get_retraction_data(retract_target_id, str(msg['from']), occupant_id)
+                except Exception as e:
+                    print(
+                        f"Bridge DB error looking up retraction: {type(e).__name__}: {e}")
+                    orig_msg = None
+
+                if orig_msg:
+                    event_id = orig_msg.get('event_id')
+                    cached_path = orig_msg.get('path')
+
+                    # Fire off cleanup tasks immediately so they run in the background
+                    db_del_task = asyncio.create_task(
+                        self.db.delete_media(stanza_id=orig_msg['stanza_id'])
+                    )
+
+                    fs_del_task = None
+                    if cached_path:
+                        fs_del_task = asyncio.create_task(
+                            asyncio.to_thread(util.rm_file, cached_path)
+                        )
+
+                    # send redaction to matrix
+                    if event_id:
+                        try:
+                            await self.matrix.room_redact(
+                                room_id=self.mx_rid,
+                                event_id=event_id,
+                                reason="Retracted by user"
+                            )
+                        except Exception as e:
+                            # Log error or notify XMPP that redaction failed
+                            await send_error(
+                                f"Matrix error during retraction: {type(e).__name__}: {e}"
+                            )
+
+                    # Catch any errors from our background cleanup tasks
+                    try:
+                        await db_del_task
+                    except Exception as e:
+                        print(
+                            f"Bridge DB error during retraction cleanup: {type(e).__name__}: {e}")
+
+                    if fs_del_task:
+                        try:
+                            await fs_del_task
+                        except Exception as e:
+                            print(
+                                f"Bridge fs error during retraction cleanup: {type(e).__name__}: {e}")
+
+                    # We successfully processed the valid retraction.
+                    # Stop processing this stanza so the fallback body isn't bridged.
+                    return
+
+            # If we reach here, validation failed or the target message wasn't found in the bridge.
+            # We explicitly fall through so the bridge processes the <fallback> body text as a normal message.
+            # ==========================================
 
             # get reply mapping from db
             xmpp_replyto_id = msg.get('reply', {}).get('id')
@@ -261,9 +327,6 @@ class KoishiRoom:
                 f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong> "
                 f"{xep0393_to_matrix_html(body)}"
             )
-
-            # wait for connection
-            await self.matrix.connected.wait()
 
             if not attachment_url:
                 try:
