@@ -301,7 +301,7 @@ class KoishiDB:
     async def get_matrix_event_by_client_id(self, client_id: str, user_jid: str, occupant_id: str | None = None):
         """
         Fetch the matrix_message_id associated with a specific XMPP client ID 
-        and sender JID/Occupant ID, handling potential ID collisions.
+        and sender JID/Occupant ID (preferred), handling potential ID collisions.
         """
         async with self.db_pool.connection() as conn:
             async with conn.cursor() as cur:
@@ -311,14 +311,13 @@ class KoishiDB:
                         """
                         SELECT matrix_message_id 
                         FROM media_mappings 
-                        WHERE xmpp_client_id = %s 
-                          AND (occupant_id = %s OR (occupant_id IS NULL AND user_jid = %s))
+                        WHERE xmpp_client_id = %s AND occupant_id = %s
                         ORDER BY created_at DESC 
                         LIMIT 1
                         """,
-                        (client_id, occupant_id, user_jid)
+                        (client_id, occupant_id)
                     )
-                else:
+                elif user_jid:
                     # Fallback for servers/clients that do not support XEP-0421
                     await cur.execute(
                         """
@@ -330,10 +329,13 @@ class KoishiDB:
                         """,
                         (client_id, user_jid)
                     )
+                else:
+                    raise ValueError(
+                        "You must either provide a user_jid or occupant_id.")
                 result = await cur.fetchone()
                 return result
 
-    async def get_retraction_data(self, stanza_id: str, user_jid: str, occupant_id: str | None = None) -> dict | None:
+    async def get_retraction_data(self, stanza_id: str, user_jid: str | None = None, occupant_id: str | None = None) -> dict | None:
         """
         Fetches metadata for a retraction, validating ownership directly in the SQL query.
         Returns the data needed to perform the redaction and clean up the filesystem.
@@ -345,13 +347,12 @@ class KoishiDB:
                         """
                         SELECT xmpp_message_id, matrix_message_id, path 
                         FROM media_mappings 
-                        WHERE xmpp_message_id = %s 
-                          AND (occupant_id = %s OR (occupant_id IS NULL AND user_jid = %s))
+                        WHERE xmpp_message_id = %s AND occupant_id = %s
                         LIMIT 1
                         """,
-                        (stanza_id, occupant_id, user_jid)
+                        (stanza_id, occupant_id)
                     )
-                else:
+                elif user_jid:
                     await cur.execute(
                         """
                         SELECT xmpp_message_id, matrix_message_id, path 
@@ -361,6 +362,9 @@ class KoishiDB:
                         """,
                         (stanza_id, user_jid)
                     )
+                else:
+                    raise ValueError(
+                        "You must either provide a user_jid or occupant_id.")
                 row = await cur.fetchone()
 
                 if not row:
