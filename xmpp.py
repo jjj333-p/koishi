@@ -5,11 +5,14 @@ Licensed as AGPL 3.0
 Distributed as-is and without warranty
 """
 import asyncio
-import time
+import os
+import platform
 
 from collections.abc import Callable
 # xmpp library
 from slixmpp.componentxmpp import ComponentXMPP
+
+from util import get_git_info
 
 
 class KoishiComponent(ComponentXMPP):
@@ -35,13 +38,23 @@ class KoishiComponent(ComponentXMPP):
 
         self.started: asyncio.Event = asyncio.Event()
 
+        # Store the version so we only fetch it once
+        # Dynamically fetch both the version and the fork's URL
+        self.git_version, self.repo_url = get_git_info()
+
         # Register event handlers
         self.add_event_handler('session_start', self.start)
 
         self.add_event_handler("moderated_message",
                                self.dispatch_moderated_message)
 
+        self.add_event_handler("vcard_get", self.handle_vcard_get)
+
+        self.status_msg = f"Koishi Bridge v{self.git_version} | Source: {self.repo_url}"
+
         # Register plugins
+        self.register_plugin('xep_0092')  # Software Version
+        self.register_plugin('xep_0054')  # vCard-temp
         self.register_plugin('xep_0030')  # Service Discovery (Disco)
         self.register_plugin('xep_0004')  # Data Forms
         self.register_plugin('xep_0060')  # Publish-Subscribe
@@ -68,6 +81,11 @@ class KoishiComponent(ComponentXMPP):
     async def start(self, _):
         """Handle session start - set up disco and send presence"""
 
+        # Set up software version response (XEP-0092)
+        self['xep_0092'].software_name = f"Koishi Matrix Bridge (Source: {self.repo_url})"
+        self['xep_0092'].version = self.git_version
+        self['xep_0092'].os = f"{platform.system()} ({os.name})"
+
         # Set up service discovery
         self['xep_0030'].add_identity(
             category='gateway',
@@ -87,13 +105,25 @@ class KoishiComponent(ComponentXMPP):
             status=None
         )
 
-        # Send initial presence
-        self.send_presence()
+        self.send_presence(pstatus=self.status_msg)
 
         # Set started flag so rooms can begin joining
         self.started.set()
 
         print(f"XMPP Component started as {self.boundjid.bare}")
+
+    def handle_vcard_get(self, iq):
+        """
+        Dynamically generate vCards for any JID on this component.
+        Injects the AGPL source link into the profile description.
+        """
+        reply = iq.reply()
+
+        # Use the plugin's stanza interface to populate the vCard
+        reply['vcard_temp']['DESC'] = f"Bridged by Koishi (v{self.git_version})\nSource: {self.repo_url}"
+        reply['vcard_temp']['URL'] = self.repo_url
+
+        reply.send()
 
     async def dispatch_moderated_message(self, msg):
         muc = msg["from"].bare

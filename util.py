@@ -6,6 +6,7 @@ Distributed as-is and without warranty
 """
 
 import os
+import subprocess
 import string
 import re
 from collections.abc import Iterable
@@ -73,3 +74,33 @@ def remove_fallbacks(body: str, namespaces: Iterable[str], fallbacks: Iterable[s
         del result[start:end]
 
     return "".join(result).strip()
+
+
+def get_git_info() -> tuple[str, str]:
+    """
+    Attempts to fetch the current Git version and remote origin URL.
+    Returns (version, url) with safe fallbacks if Git is unavailable.
+    """
+    version = "unknown version"
+    url = "https://github.com/jjj333-p/koishi"
+
+    try:
+        version = subprocess.check_output(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8").strip()
+
+        url = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"],
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8").strip()
+
+        # Optional: If you want to convert SSH URLs (git@...) to HTTPS for clickability
+        if url.startswith("git@"):
+            url = url.replace(":", "/").replace("git@", "https://")
+
+    except Exception:
+        # Fails silently if git is not installed or it's not a git repository
+        pass
+
+    return version, url

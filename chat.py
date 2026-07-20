@@ -90,7 +90,10 @@ class KoishiRoom:
             await self.xmpp.plugin['xep_0045'].join_muc_wait(
                 room=self.muc_jid,
                 nick=self.xmpp.display_name,
-                presence_options=PresenceArgs(pfrom=self.xmpp.boundjid.bare),
+                presence_options=PresenceArgs(
+                    pfrom=self.xmpp.boundjid.bare,
+                    pstatus=self.xmpp.status_msg
+                ),
                 maxchars=0,
                 timeout=30
             )
@@ -652,7 +655,10 @@ class KoishiRoom:
             await self.xmpp.plugin['xep_0045'].join_muc_wait(
                 room=self.muc_jid,
                 nick=nick,
-                presence_options=PresenceArgs(pfrom=jid),
+                presence_options=PresenceArgs(
+                    pfrom=jid,
+                    pstatus=self.xmpp.status_msg
+                ),
                 maxchars=0,
                 timeout=15
             )
