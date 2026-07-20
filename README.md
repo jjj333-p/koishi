@@ -3,7 +3,7 @@
 The fair and benevolent bridge project. Her jealousy was Parsee's weakness, but Koishi is the fair and benevolent princess here to make everything right. 
 
 In all seriousness, for now, this bridge is a Matrix <-> XMPP bridge, picking up the [Parsee Bridge](https://forge.fsky.io/lda/Parsee) left off, more ambitious in terms of features, 
-less [NIH syndrome](https://www.joelonsoftware.com/2001/10/14/in-defense-of-not-invented-here-syndrome/). I hope to eventually add support for IRC, and perhaps even pooprietary platforms eventually.
+less [NIH syndrome](https://www.joelonsoftware.com/2001/10/14/in-defense-of-not-invented-here-syndrome/). 
 
 ### This project is in very early development, you likely can get it working, however expect things to be broken or missing, and rough edges!!
 
@@ -54,7 +54,6 @@ Ranked by priority, marked by percieved difficulty if you wanted to PR
     - maunium-appservice is undocumented and basically abandonware, we'll have to implement the appservice api manually
 - bridge pfps (annoying, but prob not hard)
 - Configurability of rooms through the bot for public instances (high, perhaps not worth it)
-- Add IRC support (???)
 
 ---- 
 
