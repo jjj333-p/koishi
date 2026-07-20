@@ -50,6 +50,7 @@ class KoishiComponent(ComponentXMPP):
         self.register_plugin('xep_0461')  # Message Replies
         self.register_plugin('xep_0428')  # Fallback Indication
         self.register_plugin('xep_0359')  # Unique and Stable Stanza IDs
+        self.register_plugin('xep_0421')  # Occupant ID for MUC
         self.register_plugin('xep_0066')  # Out of Band Data
         self.register_plugin('xep_0333')  # Chat Markers (displayed indicator)
         self.register_plugin('xep_0422')  # Message Fastening

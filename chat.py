@@ -151,6 +151,9 @@ class KoishiRoom:
 
         stanza_id = msg.get('stanza_id', {}).get('id')
 
+        # Safely extract Occupant ID using the XEP-0421 plugin
+        occupant_id = msg['occupant-id']['id'] or None
+
         # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
         if stanza_id is None:
             return
@@ -215,7 +218,7 @@ class KoishiRoom:
 
             if xmpp_replace_id:
                 try:
-                    result = await self.db.get_matrix_event_by_client_id(xmpp_replace_id, str(msg['from']))
+                    result = await self.db.get_matrix_event_by_client_id(xmpp_replace_id, str(msg['from']), occupant_id)
                 except Exception as e:
                     print(e)
             if result:
@@ -340,7 +343,8 @@ class KoishiRoom:
                         msg['id'],
                         resp.event_id,
                         body,
-                        str(msg['from'])
+                        msg['from'],
+                        occupant_id
                     )
                 except UniqueViolation as _:
                     # this is working as intended as to not duplicate messages
@@ -370,7 +374,8 @@ class KoishiRoom:
                         attachment_url,
                         file_id,
                         body,
-                        msg['from']
+                        msg['from'],
+                        occupant_id
                     )
 
                 # using errors to prevent duplicate message

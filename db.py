@@ -36,6 +36,7 @@ koishi=# \d media_mappings
  user_mxid                | text                     |           |          | 
  xmpp_client_id           | text                     |           |          | 
  created_at               | timestamp with time zone |           |          | CURRENT_TIMESTAMP
+ occupant_id              | text                     |           |          | 
 Indexes:
     "idx_media_mappings_bridged_matrix_id" btree (bridged_matrix_media_id)
     "idx_media_mappings_bridged_xmpp_id" btree (bridged_xmpp_media_id)
@@ -263,16 +264,17 @@ class KoishiDB:
         client_id: str,
         event_id: str,
         body: str,
-        jid: JID
+        jid: JID,
+        occupant_id: str | None = None
     ) -> None:
         """
-        insert into media_mappings (xmpp_message_id, xmpp_client_id, matrix_message_id, body, user_jid)
-        values (stanzaid, client_id, event_id, body, jid)
+        insert into media_mappings (xmpp_message_id, xmpp_client_id, matrix_message_id, body, user_jid, occupant_id)
+        values (stanzaid, client_id, event_id, body, jid, occupant_id)
         """
         async with self.db_pool.connection() as conn:
             await conn.execute(
-                "insert into media_mappings (xmpp_message_id, xmpp_client_id, matrix_message_id, body, user_jid) values (%s, %s, %s, %s, %s)",
-                (stanzaid, client_id, event_id, body, str(jid)),
+                "insert into media_mappings (xmpp_message_id, xmpp_client_id, matrix_message_id, body, user_jid, occupant_id) values (%s, %s, %s, %s, %s, %s)",
+                (stanzaid, client_id, event_id, body, str(jid), occupant_id),
             )
 
     async def insert_xmpp_media_message_mapping(
@@ -282,36 +284,52 @@ class KoishiDB:
         url: str,
         file_id: str,
         body: str,
-        jid: JID
+        jid: JID,
+        occupant_id: str | None = None
     ) -> None:
         """
         insert into media_mappings 
-        (xmpp_message_id, xmpp_client_id, original_xmpp_media_url, bridged_matrix_media_id, body, user_jid)
-        values (stanzaid, url, file_id, body, jid)
+        (xmpp_message_id, xmpp_client_id, original_xmpp_media_url, bridged_matrix_media_id, body, user_jid, occupant_id)
+        values (stanzaid, url, file_id, body, jid, occupant_id)
         """
         async with self.db_pool.connection() as conn:
             await conn.execute(
-                "insert into media_mappings (xmpp_message_id, xmpp_client_id, original_xmpp_media_url, bridged_matrix_media_id, body, user_jid) values (%s, %s, %s, %s, %s, %s)",
-                (stanzaid, client_id, url, file_id, body, str(jid)),
+                "insert into media_mappings (xmpp_message_id, xmpp_client_id, original_xmpp_media_url, bridged_matrix_media_id, body, user_jid, occupant_id) values (%s, %s, %s, %s, %s, %s, %s)",
+                (stanzaid, client_id, url, file_id, body, str(jid), occupant_id),
             )
 
-    async def get_matrix_event_by_client_id(self, client_id: str, user_jid: str):
+    async def get_matrix_event_by_client_id(self, client_id: str, user_jid: str, occupant_id: str | None = None):
         """
         Fetch the matrix_message_id associated with a specific XMPP client ID 
-        and sender JID, handling potential ID collisions by returning the newest.
+        and sender JID/Occupant ID, handling potential ID collisions.
         """
         async with self.db_pool.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(
-                    """
-                    SELECT matrix_message_id 
-                    FROM media_mappings 
-                    WHERE xmpp_client_id = %s AND user_jid = %s 
-                    ORDER BY created_at DESC 
-                    LIMIT 1
-                    """,
-                    (client_id, user_jid)
-                )
+                if occupant_id:
+                    # If the edit includes an occupant_id, validate against it OR fallback to JID if the original message predates this feature
+                    await cur.execute(
+                        """
+                        SELECT matrix_message_id 
+                        FROM media_mappings 
+                        WHERE xmpp_client_id = %s 
+                          AND (occupant_id = %s OR (occupant_id IS NULL AND user_jid = %s))
+                        ORDER BY created_at DESC 
+                        LIMIT 1
+                        """,
+                        (client_id, occupant_id, user_jid)
+                    )
+                else:
+                    # Fallback for servers/clients that do not support XEP-0421
+                    await cur.execute(
+                        """
+                        SELECT matrix_message_id 
+                        FROM media_mappings 
+                        WHERE xmpp_client_id = %s AND user_jid = %s 
+                        ORDER BY created_at DESC 
+                        LIMIT 1
+                        """,
+                        (client_id, user_jid)
+                    )
                 result = await cur.fetchone()
                 return result
 
