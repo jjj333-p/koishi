@@ -56,4 +56,9 @@ Ranked by priority, marked by percieved difficulty if you wanted to PR
 - Configurability of rooms through the bot for public instances (high, perhaps not worth it)
 - Add IRC support (???)
 
---- 
+---- 
+
+## Contributors 
+
+- [jjj333_p](https://pain.agency) (obviously)
+- [qwertydotplus](https://qwertydotplus.cc/)
