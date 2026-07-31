@@ -422,11 +422,14 @@ def unravel_links(f):
             case ('/a', {'href': href}):
                 # extract_tag_attributes doesn't strip out quotes, so we strip them here:
                 sanitized_href = href.strip('\'"')
-                yield from link_content
+                link_content = "".join(link_content | naive_convert)
                 # if the link shouldn't be skipped:
-                if not (sanitized_href.startswith("https://matrix.to/") \
-                    or sanitized_href == "".join(link_content | naive_convert) ):
-                    yield f' ( {sanitized_href} )'
+                if sanitized_href.startswith("https://matrix.to/"):
+                    yield f'{link_content}'
+                elif sanitized_href == link_content.replace('\u200B',''):
+                    yield f'{sanitized_href}'
+                else:
+                    yield f'{link_content} ( {sanitized_href} )'
                 link_content = None
             case ('/a', _):
                 yield from link_content
@@ -546,7 +549,7 @@ def matrix_html_to_xep0393(message: str) -> str:
 
 
 if __name__ == "__main__":
-    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code class='language-py'>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<test novalue> <a href='https://example.org'>https://example.org</a> <a href='https://example.org'>example</a> <a href='https://matrix.to/'><endtag"
+    TEST_MESSAGE = "<test interrupted tag <i><i><b>bold&italic test<br>br <a href='pass&lt;'>test link</a> <a>test closing attr, pathological attr</a href='>fail'></i></b></i> <s>strikethrough</s><blockquote>1 quote<blockquote>2 quotes<pre><code class='language-py'>code in<br>quotes</code></pre></blockquote></blockquote><mx-reply>fail mx-reply</mx-reply><p>paragraph 1</p>out of paragraph 1<p>paragraph 2</p>test&lt;&gt;&amp;escape<test novalue> <a href='https://exam_ple.org'>https://exam_ple.org</a> <a href='https://example.org'>example</a> <a href='https://matrix.to/'><endtag"
     VERIFY = matrix_html_to_xep0393(TEST_MESSAGE)
     print(VERIFY)
     assert VERIFY.strip() == '''
@@ -561,7 +564,7 @@ br test link ( pass< ) test closing attr, pathological attr*_ ~strikethrough~
 paragraph 1
 out of paragraph 1
 paragraph 2
-test<\u200b>&escape https://example.org example ( https://example.org ) <endtag
+test<\u200b>&escape https://exam_ple.org example ( https://example.org ) <endtag
 '''.strip('\n')
     print('\n\n---\n\n')
     TEST_MESSAGE = '''
