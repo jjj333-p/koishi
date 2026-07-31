@@ -2,7 +2,7 @@
 
 The fair and benevolent bridge project. Her jealousy was Parsee's weakness, but Koishi is the fair and benevolent princess here to make everything right. 
 
-In all seriousness, for now, this bridge is a Matrix <-> XMPP bridge, picking up the [Parsee Bridge](https://forge.fsky.io/lda/Parsee) left off, more ambitious in terms of features, 
+In all seriousness, for now, this bridge is a Matrix <-> XMPP bridge, picking up the [Parsee Bridge](https://foundry.fsky.io/kappachat/Parsee) left off, more ambitious in terms of features, 
 less [NIH syndrome](https://www.joelonsoftware.com/2001/10/14/in-defense-of-not-invented-here-syndrome/). 
 
 ### This project is in very early development, you likely can get it working, however expect things to be broken or missing, and rough edges!!
