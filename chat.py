@@ -58,6 +58,8 @@ class KoishiRoom:
         self.bridged_jids: set[str] = set()
         self.cached_bridged_jnics: dict[str, str] = {}
 
+        self.ready: asyncio.Event = asyncio.Event()
+
     def connect_matrix(self, matrix_side):
         pass
 
@@ -113,6 +115,8 @@ class KoishiRoom:
         except Exception as e:
             print(f"Failed to join Matrix room {self.mx_rid}: {e}")
             raise
+
+        self.ready.set()
 
     async def handle_xmpp_message_error(self, msg):
         if self.matrix is None:
@@ -215,7 +219,7 @@ class KoishiRoom:
                 return
 
             # wait for connection
-            await self.matrix.connected.wait()
+            await self.ready.wait()
 
             # ==========================================
             # HANDLE USER RETRACTIONS (XEP-0424)
@@ -615,7 +619,7 @@ class KoishiRoom:
                     asyncio.to_thread(util.rm_file, cached_path))
 
             # wait for connection
-            await self.matrix.connected.wait()
+            await self.ready.wait()
 
             # Perform Matrix Redaction
             if event_id:
@@ -741,7 +745,7 @@ class KoishiRoom:
 
         async with self.matrix_queue_lock:
             # hold onto events until they can be bridged
-            await self.xmpp.started.wait()
+            await self.ready.wait()
 
             try:
                 await self.join_xmpp_puppet_for_matrix(
@@ -895,7 +899,7 @@ class KoishiRoom:
 
         async with self.matrix_queue_lock:
             # hold onto events until they can be bridged
-            await self.xmpp.started.wait()
+            await self.ready.wait()
 
             try:
                 await self.join_xmpp_puppet_for_matrix(
@@ -1041,7 +1045,7 @@ class KoishiRoom:
             return
 
         # hold onto events until they can be bridged
-        await self.xmpp.started.wait()
+        await self.ready.wait()
 
         user_jid = f"{event.user_id[1:].replace(':', '_')}@{self.xmpp.boundjid.bare}"
 
