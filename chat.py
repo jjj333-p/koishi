@@ -99,7 +99,10 @@ class KoishiRoom:
             print(f"Successfully joined XMPP MUC: {self.muc_jid_str}")
         except Exception as e:
             print(f"Failed to join XMPP MUC {self.muc_jid_str}: {e}")
-            raise
+            raise e
+
+        self.xmpp.enable_ping_for_muc(
+            self.muc_jid_str, self._handle_muc_disconnect)
 
         # Wait for Matrix client to be ready
         await self.matrix.connected.wait()
@@ -114,6 +117,103 @@ class KoishiRoom:
             raise
 
         self.ready.set()
+
+    async def _handle_muc_disconnect(self, event, reason: str | None):
+        async with self.xmpp_queue_lock:
+            # clear internal set of bridged users so that we will rejoin them
+            self.bridged_jnics: set[str] = set()
+            self.bridged_jids: set[str] = set()
+            self.cached_bridged_jnics: dict[str, str] = {}
+
+            def rejoin_msg(attempt, secs):
+                """
+                pylint is 'special' and wont let me do a single line lambda here even though this nested function
+                is more ugly tbh. god i hate python
+
+                https://pylint.readthedocs.io/en/latest/user_guide/messages/convention/multiple-statements.html
+                """
+                return (
+                    f"Disconnected from {self.muc_jid_str}{f'for reason {reason}' if reason is not None else ''}. "
+                    f"Attempt {attempt} to rejoin in {secs} seconds."
+                )
+
+            resp: RoomSendResponse = await self.matrix.room_send(
+                room_id=self.mx_rid,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.notice",
+                    "body": rejoin_msg(1, 0),
+                }
+            )
+
+            rejoined = False
+            backoff_secs = 30
+            attempt = 1
+            while not rejoined:
+                # Join the MUC as the bridge component
+                print(
+                    f"rejoining XMPP MUC: {self.muc_jid_str} as {self.xmpp.display_name}")
+                try:
+                    await self.xmpp.plugin['xep_0045'].join_muc_wait(
+                        room=self.muc_jid,
+                        nick=self.xmpp.display_name,
+                        presence_options=PresenceArgs(
+                            pfrom=self.xmpp.boundjid.bare,
+                            pstatus=self.xmpp.status_msg
+                        ),
+                        maxchars=0,
+                        timeout=30
+                    )
+                    print(f"Successfully joined XMPP MUC: {self.muc_jid_str}")
+
+                    try:
+                        await self.matrix.room_send(
+                            room_id=self.mx_rid,
+                            message_type="m.room.message",
+                            content={
+                                "msgtype": "m.text",
+                                "body": f"* Successfully rejoined muc.",
+                                "m.new_content": {
+                                    "msgtype": "m.notice",
+                                    "body": "successfully rejoined muc.",
+                                },
+                                "m.relates_to": {
+                                    "rel_type": "m.replace",
+                                    "event_id": resp.event_id
+                                },
+                            }
+                        )
+                    except Exception as _:
+                        pass
+                except Exception as e:
+                    print(f"Failed to join XMPP MUC {self.muc_jid_str}: {e}")
+
+                    attempt += 1
+                    backoff_secs *= 2
+
+                    body = rejoin_msg(attempt, backoff_secs)
+
+                    try:
+                        await self.matrix.room_send(
+                            room_id=self.mx_rid,
+                            message_type="m.room.message",
+                            content={
+                                "msgtype": "m.text",
+                                "body": f"* {body}",
+                                "m.new_content": {
+                                    "msgtype": "m.notice",
+                                    "body": body,
+                                },
+                                "m.relates_to": {
+                                    "rel_type": "m.replace",
+                                    "event_id": resp.event_id
+                                },
+                            }
+                        )
+                    except Exception as _:
+                        pass
+
+                    asyncio.sleep(backoff_secs)
 
     async def handle_xmpp_message_error(self, msg):
         if self.matrix is None:

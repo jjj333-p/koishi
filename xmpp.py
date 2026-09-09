@@ -7,10 +7,14 @@ Distributed as-is and without warranty
 import asyncio
 import os
 import platform
+import logging
 
 from collections.abc import Callable
+
 # xmpp library
 from slixmpp.componentxmpp import ComponentXMPP
+from slixmpp.plugins.xep_0410 import PingStatus
+from slixmpp import JID
 
 from util import get_git_info
 
@@ -36,6 +40,8 @@ class KoishiComponent(ComponentXMPP):
 
         self.moderated_message_handlers: dict[str, Callable] = {}
 
+        self._muc_ping_changed_handlers: dict[str, Callable] = {}
+
         self.started: asyncio.Event = asyncio.Event()
 
         # Store the version so we only fetch it once
@@ -44,10 +50,14 @@ class KoishiComponent(ComponentXMPP):
 
         # Register event handlers
         self.add_event_handler('session_start', self.start)
-
-        self.add_event_handler("moderated_message",
-                               self.dispatch_moderated_message)
-
+        self.add_event_handler(
+            "moderated_message",
+            self.dispatch_moderated_message
+        )
+        self.add_event_handler(
+            'muc_ping_changed',
+            self.dispatch_muc_ping_changed
+        )
         self.add_event_handler("vcard_get", self.handle_vcard_get)
 
         self.status_msg = f"Koishi Bridge v{self.git_version} | Source: {self.repo_url}"
@@ -71,6 +81,8 @@ class KoishiComponent(ComponentXMPP):
         self.register_plugin('xep_0425')  # Message Moderation
         self.register_plugin('xep_0308')  # Message corrections
         self.register_plugin('xep_0012')  # Last Activity / Uptime
+        self.register_plugin('xep_0199')  # XMPP Ping
+        self.register_plugin('xep_0410')  # MUC Self-Ping (Schrödinger's Chat)
 
         self.matrix_side = None
 
@@ -129,3 +141,25 @@ class KoishiComponent(ComponentXMPP):
         muc = msg["from"].bare
         if muc in self.moderated_message_handlers:
             await self.moderated_message_handlers[muc](msg)
+
+    async def dispatch_muc_ping_changed(self, event):
+        muc_resource, _ = event['key']
+        status = event['result']
+
+        muc = muc_resource.bare
+
+        logging.info(f"got status {status.name} in muc {muc}")
+
+        if status in [PingStatus.DISCONNECTED, PingStatus.TIMEOUT] and muc in self._muc_ping_changed_handlers:
+            await self._muc_ping_changed_handlers[muc](event, "muc_ping_timeout")
+
+    def enable_ping_for_muc(self, muc_bare: str, on_fail: Callable):
+
+        self._muc_ping_changed_handlers[muc_bare] = on_fail
+
+        self.plugin['xep_0410'].enable_self_ping(
+            muc_resource=JID(f"{muc_bare}/{self.display_name}"),
+            orig_jid=self.boundjid.bare,
+            interval=120,
+            timeout=30,
+        )
