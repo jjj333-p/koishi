@@ -60,9 +60,6 @@ class KoishiRoom:
 
         self.ready: asyncio.Event = asyncio.Event()
 
-    def connect_matrix(self, matrix_side):
-        pass
-
     async def connect(self):
         """Connect room event handlers and join both MUC and Matrix room"""
 
