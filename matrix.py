@@ -8,8 +8,7 @@ import asyncio
 from typing import Optional
 
 # matrix library
-from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice, Receipt, ReceiptEvent, \
-    RedactionEvent
+from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice,  ReceiptEvent, RedactionEvent
 
 
 class KoishiMatrixClient:
