@@ -151,7 +151,7 @@ class KoishiComponent(ComponentXMPP):
         logging.info(f"got status {status.name} in muc {muc}")
 
         if status in [PingStatus.DISCONNECTED, PingStatus.TIMEOUT] and muc in self._muc_ping_changed_handlers:
-            await self._muc_ping_changed_handlers[muc](event, "muc_ping_timeout")
+            await self._muc_ping_changed_handlers[muc]("muc_ping_timeout")
 
     def enable_ping_for_muc(self, muc_bare: str, on_fail: Callable):
 

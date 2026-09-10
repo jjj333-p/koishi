@@ -22,18 +22,21 @@ from psycopg.errors import UniqueViolation
 from xmpp import KoishiComponent
 from db import KoishiDB
 import util
+import matrix
 from formatting import matrix_html_to_xep0393, xep0393_to_matrix_html
 
 # TODO: copy over control character sanitization
 
 
 class KoishiRoom:
-    def __init__(self, http_domain: str, mappingJSON: dict[str, str], db: KoishiDB, xmpp_side: KoishiComponent, matrix_side,):
+    def __init__(self, http_domain: str, mappingJSON: dict[str, str], db: KoishiDB, xmpp_side: KoishiComponent, matrix_side: matrix.KoishiMatrixClient,):
 
         self.muc_jid_str: str = mappingJSON.get("xmpp")
         self.muc_jid: JID = JID(self.muc_jid_str)
 
         self.http_domain = http_domain
+
+        self.reconnecting: bool = False
 
         if db is None:
             raise ValueError("DB must not be None")
@@ -55,7 +58,7 @@ class KoishiRoom:
         self.bridged_mx_eventid: set[str] = set()
 
         self.bridged_jnics: set[str] = set()
-        self.bridged_jids: set[str] = set()
+        self.bridged_jids: dict[str, str] = {}
         self.cached_bridged_jnics: dict[str, str] = {}
 
         self.ready: asyncio.Event = asyncio.Event()
@@ -73,11 +76,23 @@ class KoishiRoom:
         async def _handle_xmpp_message_error(msg):
             await self.handle_xmpp_message_error(msg)
 
-        self.xmpp.add_event_handler(
-            f"muc::{self.muc_jid_str}::message", _handle_xmpp_message)
+        async def _handle_muc_got_offline(msg):
+            await self.handle_muc_got_offline(msg)
 
         self.xmpp.add_event_handler(
-            f"muc::{self.muc_jid_str}::message_error", _handle_xmpp_message_error)
+            f"muc::{self.muc_jid_str}::message",
+            _handle_xmpp_message
+        )
+
+        self.xmpp.add_event_handler(
+            f"muc::{self.muc_jid_str}::message_error",
+            _handle_xmpp_message_error
+        )
+
+        self.xmpp.add_event_handler(
+            f"muc::{self.muc_jid_str}::got_offline",
+            _handle_muc_got_offline
+        )
 
         # Wait for XMPP component to be ready
         await self.xmpp.started.wait()
@@ -102,7 +117,9 @@ class KoishiRoom:
             raise e
 
         self.xmpp.enable_ping_for_muc(
-            self.muc_jid_str, self._handle_muc_disconnect)
+            self.muc_jid_str,
+            self.handle_muc_disconnect
+        )
 
         # Wait for Matrix client to be ready
         await self.matrix.connected.wait()
@@ -118,11 +135,22 @@ class KoishiRoom:
 
         self.ready.set()
 
-    async def _handle_muc_disconnect(self, event, reason: str | None):
+    async def handle_muc_disconnect(self, reason: str | None):
+        """
+        callback for handling any sort of recoverable muc disconnect.
+
+        reason: optional string that will be shown to the matrix side indicating why the 
+            server was disconnected
+        """
+
+        if self.reconnecting:
+            return
+        self.reconnecting = True
+
         async with self.xmpp_queue_lock:
             # clear internal set of bridged users so that we will rejoin them
             self.bridged_jnics: set[str] = set()
-            self.bridged_jids: set[str] = set()
+            self.bridged_jids: dict[str, str] = {}
             self.cached_bridged_jnics: dict[str, str] = {}
 
             def rejoin_msg(attempt, secs):
@@ -166,13 +194,15 @@ class KoishiRoom:
                     )
                     print(f"Successfully joined XMPP MUC: {self.muc_jid_str}")
 
+                    self.reconnecting = False
+
                     try:
                         await self.matrix.room_send(
                             room_id=self.mx_rid,
                             message_type="m.room.message",
                             content={
                                 "msgtype": "m.text",
-                                "body": f"* Successfully rejoined muc.",
+                                "body": "* Successfully rejoined muc.",
                                 "m.new_content": {
                                     "msgtype": "m.notice",
                                     "body": "successfully rejoined muc.",
@@ -183,6 +213,7 @@ class KoishiRoom:
                                 },
                             }
                         )
+                        rejoined = True
                     except Exception as _:
                         pass
                 except Exception as e:
@@ -214,6 +245,72 @@ class KoishiRoom:
                         pass
 
                     asyncio.sleep(backoff_secs)
+
+    async def handle_muc_got_offline(self, presence):
+        status_codes = presence['muc']['status_codes']
+
+        # Only care about our own puppets
+        if 110 not in status_codes:
+            return
+
+        receiver_jid: JID = presence['to']  # The exact puppet that got removed
+
+        if receiver_jid == self.xmpp.boundjid.bare:
+            # TODO: gracefully handle if banned
+            await self.handle_muc_disconnect("got_offline")
+            return
+
+        puppet_mxid = self.bridged_jids.get(str(receiver_jid))
+
+        # closure for consistent error handling
+        def send_error(error_str: str) -> None:
+            err_id = str(uuid.uuid4())
+            err_msg = self.xmpp.make_message(
+                mto=self.muc_jid,
+                mbody=error_str,
+                mtype='groupchat',
+                mfrom=self.xmpp.boundjid.bare,
+            )
+            err_msg.set_id(err_id)
+            self.xmpp_error_ids.add(err_id)
+            err_msg.send()
+
+        if not puppet_mxid:
+            send_error(
+                f"Status code `101` present, however I do not know `{receiver_jid}`")
+            return
+
+        try:
+            reason = presence['muc']['item']['reason']
+            actor_nick = presence['muc']['item']['actor']['nick']
+            occupant_id = presence['occupant-id']['id']
+
+            if any(
+                (code in status_codes) for code in (
+                    301,  # ban
+                    321,  # affiliation revoked
+                    322,  # room locked
+                )
+            ):
+                await self.matrix.client.room_ban(
+                    self.mx_rid,
+                    puppet_mxid,
+                    f"Banned by {actor_nick} ({occupant_id}) with reason {reason or '<no reason provided>'}"
+                )
+
+            # kick
+            elif 307 in status_codes:
+                await self.matrix.client.room_kick(
+                    self.mx_rid,
+                    puppet_mxid,
+                    f"Kicked by {actor_nick} ({occupant_id}) with reason {reason or '<no reason provided>'}"
+                )
+
+            # trigger rejoin if they rejoin and message again
+            del self.bridged_jids[str(receiver_jid)]
+        except Exception as e:
+            send_error(
+                f"Could not affect puppet membership due to matrix error {str(e)}")
 
     async def handle_xmpp_message_error(self, msg):
         if self.matrix is None:
@@ -776,7 +873,7 @@ class KoishiRoom:
 
             self.cached_bridged_jnics[mxid] = nick
             self.bridged_jnics.add(nick)
-            self.bridged_jids.add(jid)
+            self.bridged_jids[jid] = mxid
 
     async def handle_matrix_text_message(self, room: MatrixRoom, event: RoomMessageText):
 
