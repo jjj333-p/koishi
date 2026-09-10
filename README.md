@@ -21,6 +21,36 @@ to a section of code will be above the code (in terms of like functions and what
 Licensed under AGPLv3
 
 ----
+## Configuration
+
+Create a file login.json that looks like this. 
+```json
+{
+    "vanity_name": "Koishi Bridge",
+    "matrix": {
+        "domain": "https://matrix.4d2.org",
+        "mxid": "@koishi-jjj333_p:4d2.org",
+        "password": "[redacted]"
+    },
+    "xmpp": {
+        "jid": "koishi.pain.agency",
+        "secret": "[redacted]",
+        "domain": "localhost",
+        "port": 5347
+    },
+    "bridge-mapping": [
+        {
+            "xmpp": "chaos@group.pain.agency",
+            "matrix": "!odwJFwanVTgIblSUtg:matrix.org"
+        },
+        ...
+    ],
+    "http_domain": "koishi.pain.agency",
+    "postgresql_conn": "postgresql://koishi:[password]@localhost:[port]/koishi",
+}
+```
+
+----
 
 ## Currently Supported Features:
 
@@ -39,12 +69,14 @@ Licensed under AGPLv3
 - automatic voicing of puppets
 - bridging of moderations (XMPP), Retractions (XMPP), and Redactions (Matrix)
     - TODO: ensure server support
+- bridging of kicks and bans of XMPP puppets to the Matrix side
 - configuration of bridging multiple rooms (TODO: document)
 <img width="1037" height="549" alt="image" src="https://github.com/user-attachments/assets/c2ec3da6-48bf-46aa-b3b1-fa33e94ff272" />
 <img width="1091" height="521" alt="image" src="https://github.com/user-attachments/assets/ebf82ec6-6644-457f-9148-c2cac930501e" />
 <img width="1302" height="926" alt="image" src="https://github.com/user-attachments/assets/691c4b52-1af1-44a2-8b6d-fb115e088404" />
+<img width="1043" height="97" alt="image" src="https://github.com/user-attachments/assets/e223dd39-11f7-40d3-8bee-f389151834aa" />
+<img width="1056" height="89" alt="image" src="https://github.com/user-attachments/assets/f03dc8de-e8b3-4cb7-8247-87fff55c2b6c" />
 
- 
 ## TODO:
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
