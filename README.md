@@ -31,8 +31,8 @@ Licensed under AGPLv3
     - persistent id storage for reply bridging
     - media
         - fake Auth Media + redirect to original url for XMPP -> Matrix bridging
-        - download and re-serve matrix media to a url for XMPP
-    - read receipt on matrix side to confirm delivery to XMPP
+        - download and re-serve Matrix media to a url for XMPP
+    - read receipt on Matrix side to confirm delivery to XMPP
     - read receipt bridging from Matrix to XMPP
 - Corrections/edits
     - XMPP -> Matrix replies resolve if its a correction and reply to the original event
@@ -48,17 +48,20 @@ Licensed under AGPLv3
 ## TODO:
 Ranked by priority, marked by percieved difficulty if you wanted to PR
 
-- automatically disambiguate puppets if theres duplicate nicks on matrix side (low-med)
-- bridge leaves from matrix to xmpp (lowish)
+- automatically disambiguate puppets if theres duplicate nicks on Matrix side (low-med)
+- bridge leaves from Matrix to XMPP (lowish)
 - Bridge Bans (medium)
 - Bridge Reactions (difficult, requires storing in db due to different formats)
     - Matrix is 1 reaction per event while XMPP is last reaction event contains the list of your current reactions
 - When bridging message deletions, ensure server support
 - Add puppeting on Matrix side (VERY HIGH)
     - bridge read receipts XMPP -> Matrix
-    - use puppet to let matrix auth verify retractions
+    - use puppet to let Matrix auth verify retractions
     - maunium-appservice is undocumented and basically abandonware, we'll have to implement the appservice api manually
-- bridge pfps (annoying, but prob not hard)
+- bridge pfps
+    - Matrix -> XMPP hard as slixmpp only has nice handling for clients not servers/components
+        - maybe base on [Jabbagram](https://github.com/ventureoo/jabagram/commit/5829a5525eea891d03a6b16843a387b055eaf44f)
+    - XMPP -> Matrix mainly tedious and long
 - Configurability of rooms through the bot for public instances (high, perhaps not worth it)
 
 ---- 
