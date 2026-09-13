@@ -161,7 +161,7 @@ class KoishiRoom:
                 https://pylint.readthedocs.io/en/latest/user_guide/messages/convention/multiple-statements.html
                 """
                 return (
-                    f"Disconnected from {self.muc_jid_str}{f'for reason {reason}' if reason is not None else ''}. "
+                    f"Disconnected from {self.muc_jid_str}{f' for reason {reason}' if reason is not None else ''}. "
                     f"Attempt {attempt} to rejoin in {secs} seconds."
                 )
 
@@ -180,7 +180,8 @@ class KoishiRoom:
             while not rejoined:
                 # Join the MUC as the bridge component
                 print(
-                    f"rejoining XMPP MUC: {self.muc_jid_str} as {self.xmpp.display_name}")
+                    f"rejoining XMPP MUC: {self.muc_jid_str} as {self.xmpp.display_name}"
+                )
                 try:
                     await self.xmpp.plugin['xep_0045'].join_muc_wait(
                         room=self.muc_jid,
@@ -205,7 +206,7 @@ class KoishiRoom:
                                 "body": "* Successfully rejoined muc.",
                                 "m.new_content": {
                                     "msgtype": "m.notice",
-                                    "body": "successfully rejoined muc.",
+                                    "body": "Successfully rejoined muc.",
                                 },
                                 "m.relates_to": {
                                     "rel_type": "m.replace",
@@ -336,7 +337,8 @@ class KoishiRoom:
             )
         except Exception as e:
             print(
-                f"Could not send error message to Matrix: {type(e).__name__}: {e}")
+                f"Could not send error message to Matrix: {type(e).__name__}: {e}"
+            )
 
     async def handle_xmpp_message(self, msg):
 
