@@ -133,9 +133,20 @@ class KoishiWebserver:
                     if not filepath:
                         await db.set_mtrx_media_size(size, mxc)
 
+                except httpx.TimeoutException as e:
+                    print(
+                        f"Upstream request timed out for id {media_id} ({mxc})\n{e}"
+                    )
+                    return Response(
+                        content="Upstream server timed out",
+                        status_code=504,
+                        headers={'X-Error': 'Gateway Timeout'}
+                    )
+
                 except httpx.HTTPError as e:
                     print(
-                        f"Failed to get head request for id {media_id} ({mxc}) due to upstream error\n{e}")
+                        f"Failed to get head request for id {media_id} ({mxc}) due to upstream error\n{e}"
+                    )
                     return Response(
                         content=None,
                         status_code=502,
@@ -282,7 +293,7 @@ class KoishiWebserver:
         headers = {"Authorization": f"Bearer {token}"}
 
         filename = str(uuid.uuid4())
-        filepath = f"{ cache_dir }{ '' if cache_dir.endswith('/') else '/' }{ filename }"
+        filepath = f"{cache_dir}{'' if cache_dir.endswith('/') else '/'}{filename}"
 
         downloaded_bytes = 0
 
