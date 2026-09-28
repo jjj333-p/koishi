@@ -321,6 +321,10 @@ class KoishiRoom:
 
         ET.indent(msg.xml, space="  ")
 
+        if not str(msg['id']).startswith('$'):
+            print(str(msg))
+            return
+
         try:
             await self.matrix.room_send(
                 room_id=self.mx_rid,
