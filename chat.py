@@ -321,6 +321,8 @@ class KoishiRoom:
 
         ET.indent(msg.xml, space="  ")
 
+        # we always use the matrix id for events we bridge (other than ephemerals)
+        # so we should check if its a valid matrix id
         if not str(msg['id']).startswith('$'):
             print(str(msg))
             return
