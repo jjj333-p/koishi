@@ -1074,9 +1074,15 @@ class KoishiRoom:
         sanitized_body = util.illegal_xml_chars_regex.sub('', body_for_xmpp)
 
         media_id: str = str(uuid.uuid4())
+        filetype: str = event.source.get('content', {}).get('info', {}).get(
+            'mimetype', 'application/octet-stream')
         raw_mx_filename = event.source.get('content', {}).get('filename')
         filename: str = urllib.parse.quote_plus(
-            (raw_mx_filename or sanitized_body).split('/')[-1]
+            (
+                raw_mx_filename or
+                sanitized_body.split('/')[-1] or
+                f"unknown{mimetypes.guess_extension(type=filetype, strict=False) or ".bin"}"
+            )
         )
 
         async def send_error(error_str: str):
@@ -1189,7 +1195,7 @@ class KoishiRoom:
             # we cant reply to anything, form a message normally
             else:
 
-                # if it doesnt qualify for the caption display spec dont bridge it
+                # if it doesnt qualify for the caption display spec dont bridge as a captioned message
                 if raw_mx_filename is None or raw_mx_filename == sanitized_body:
                     message: stanza.Message = self.xmpp.make_message(
                         mto=self.muc_jid,
