@@ -60,7 +60,7 @@ class KoishiComponent(ComponentXMPP):
         )
         self.add_event_handler("vcard_get", self.handle_vcard_get)
 
-        self.status_msg = f"Koishi Bridge v{self.git_version} | Source: {self.repo_url}"
+        self.status_msg = f"Koishi Bridge {self.git_version} | Source: {self.repo_url}"
 
         # Register plugins
         self.register_plugin('xep_0092')  # Software Version
