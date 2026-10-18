@@ -245,7 +245,7 @@ class KoishiRoom:
                     except Exception as _:
                         pass
 
-                    asyncio.sleep(backoff_secs)
+                    await asyncio.sleep(backoff_secs)
 
     async def handle_muc_got_offline(self, presence):
         status_codes = presence['muc']['status_codes']
