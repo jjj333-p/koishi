@@ -55,10 +55,11 @@ def rm_file(filepath: str):
         print(f"Deleted cached media: {filepath}")
 
 
-def remove_fallbacks(body: str, namespaces: Iterable[str], fallbacks: Iterable[str]) -> str:
+def remove_fallbacks(body: str, namespaces: Iterable[str | None], fallbacks: Iterable[str]) -> str:
     # get out fallback ranges for features we support
     ranges_to_remove = []
     for fallback in fallbacks:
+        # slixmpp stanza interface should never return None, so all None objects are effectively ignored
         if fallback["for"] in namespaces:
             start = int(fallback["body"]["start"])
             end = int(fallback["body"]["end"])

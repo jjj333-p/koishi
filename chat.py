@@ -10,13 +10,16 @@ import urllib
 import mimetypes
 import html
 
+# import a psycopg error
+from psycopg.errors import UniqueViolation
+
 # matrix library
 from nio import MatrixRoom, RoomMessageText, RoomMessageMedia, Receipt, RedactionEvent, RoomSendResponse, RoomSendError
-# import a psycopg error
+
+# slixmpp
 from slixmpp import stanza, JID
 from slixmpp.types import PresenceArgs
 from slixmpp.plugins.xep_0428.stanza import Fallback
-from psycopg.errors import UniqueViolation
 
 # koishi objects
 from xmpp import KoishiComponent
@@ -372,6 +375,7 @@ class KoishiRoom:
         occupant_id = msg['occupant-id']['id'] or None
 
         # server-assigned XEP-0359 Stanza ID used for deduplication and archiving)
+        # TODO: verify server support
         if stanza_id is None:
             return
 
@@ -415,11 +419,8 @@ class KoishiRoom:
             # wait for connection
             await self.ready.wait()
 
-            # ==========================================
             # HANDLE USER RETRACTIONS (XEP-0424)
-            # ==========================================
             retract_target_id = msg['retract']['id']
-
             if retract_target_id:
                 try:
                     orig_msg = await self.db.get_retraction_data(retract_target_id, str(msg['from']), occupant_id)
@@ -514,11 +515,10 @@ class KoishiRoom:
             attachment_url: str | None = msg.get('oob', {}).get('url')
 
             # fallbacks for found and supported features
-            REMOVE_FOR = []
-            if matrix_replyto_id:
-                REMOVE_FOR.append("urn:xmpp:reply:0")
-            if attachment_url:
-                REMOVE_FOR.append("jabber:x:oob")
+            REMOVE_FOR = (
+                "urn:xmpp:reply:0" if matrix_replyto_id else None,
+                "jabber:x:oob" if attachment_url else None,
+            )
 
             body = util.remove_fallbacks(
                 msg['body'],
@@ -533,102 +533,45 @@ class KoishiRoom:
                 f"{xep0393_to_matrix_html(body)}"
             )
 
+            content = {
+                "format": "org.matrix.custom.html",
+                "com.beeper.per_message_profile": {
+                    "id": str(msg['from']),
+                    "displayname": msg['from'].resource,
+                    "has_fallback": True
+                }
+            }
+
+            if replyto_mxid:
+                content["m.mentions"] = {
+                    "user_ids": [
+                        replyto_mxid
+                    ]
+                }
+
+            if matrix_replace_id:
+                content["m.new_content"] = {
+                    "msgtype": "m.text",
+                    "body": matrix_body,
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": matrix_formatted_body
+                }
+                content["m.relates_to"] = {
+                    "rel_type": "m.replace",
+                    "event_id": matrix_replace_id
+                }
+            elif matrix_replyto_id:
+                content["m.relates_to"] = {
+                    "m.in_reply_to": {
+                        "event_id": matrix_replyto_id
+                    }
+                }
+
             if not attachment_url:
-                try:
-                    # You must 'await' this, otherwise the message is never sent!
-                    resp: RoomSendResponse = await self.matrix.room_send(
-                        room_id=self.mx_rid,
-                        message_type="m.room.message",
-                        content={
-                            "msgtype": "m.text",
-                            "body": f"* {matrix_body}" if matrix_replace_id else matrix_body,
-                            "format": "org.matrix.custom.html",
-                            "formatted_body": f"* {matrix_formatted_body}" if matrix_replace_id else matrix_formatted_body,
-                            "com.beeper.per_message_profile": {
-                                "id": str(msg['from']),
-                                "displayname": msg['from'].resource,
-                                "has_fallback": True,
-                            },
-                            # TODO: properly parse out mentions based on bridged displayname
-                            ** (
-                                {
-                                    "m.mentions": {
-                                        "user_ids": [
-                                            replyto_mxid
-                                        ],
-                                    },
-                                } if replyto_mxid else {}
-                            ),
-                            ** (
-                                {
-                                    "m.new_content": {
-                                        "msgtype": "m.text",
-                                        "body": matrix_body,
-                                        "format": "org.matrix.custom.html",
-                                        "formatted_body": matrix_formatted_body,
-                                    },
-                                    "m.relates_to": {
-                                        "rel_type": "m.replace",
-                                        "event_id": matrix_replace_id
-                                    },
-                                } if matrix_replace_id else (
-                                    {
-                                        "m.relates_to": {
-                                            "m.in_reply_to": {
-                                                "event_id": matrix_replyto_id
-                                            },
-                                        },
-                                    } if matrix_replyto_id else {}
-                                )
-                            ),
-                        }
-                    )
-                except Exception as e:
-                    await self.send_error_xmpp(
-                        f"Could not bridge message because of Matrix error of type {type(e)}\n{e}",
-                        stanza_id, msg_from, body
-                    )
-                    return
-
-                if type(resp) == RoomSendError:
-                    await self.send_error_xmpp(
-                        f"Could not bridge, got back a room send error\n{resp}",
-                        stanza_id, msg_from, body
-                    )
-                    return
-
-                self.xmpp['xep_0333'].send_marker(
-                    mto=self.muc_jid_str,
-                    id=stanza_id,
-                    mtype="groupchat",
-                    marker="displayed",
-                    mfrom=self.xmpp.boundjid.bare
-                )
-
-                try:
-                    await self.db.insert_message_mapping(
-                        stanza_id,
-                        msg['id'],
-                        resp.event_id,
-                        body,
-                        msg['from'],
-                        occupant_id
-                    )
-
-                    if xmpp_replace_id:
-                        await self.db.insert_edit_mapping(stanza_id, xmpp_replace_id)
-                except UniqueViolation as _:
-                    # this is working as intended as to not duplicate messages
-                    return
-                except Exception as e:
-                    await self.send_error_xmpp(
-                        f"could not bridge message because of database error of type {type(e)}\n{e}",
-                        stanza_id, msg_from, body
-                    )
-                    return
-
+                content["msgtype"] = "m.text"
+                content["body"] = f"* {matrix_body}" if matrix_replace_id else matrix_body
+                content["formatted_body"] = f"* {matrix_formatted_body}" if matrix_replace_id else matrix_formatted_body
             else:
-
                 # xmpp clients just get this information from the url so we have to add it
                 filename: str = attachment_url.split('/')[-1]
                 mime_type, _ = mimetypes.guess_type(filename)
@@ -670,69 +613,69 @@ class KoishiRoom:
                     else ""
                 )
 
+                content["msgtype"] = f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}"
+                content["body"] = f"{msg['from'].resource}: sent a(n) {mime_type}{caption}"
+                content["formatted_body"] = (
+                    f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong> sent a(n) "
+                    f"{html.escape(mime_type, quote=False)}"
+                    f"{formatted_caption}"
+                )
+                content["url"] = f"mxc://{self.http_domain}/{file_id}"
+                content["info"] = {"mimetype": mime_type}
+                content["filename"] = filename
+                content["external_url"] = attachment_url
+
+            try:
+                # You must 'await' this, otherwise the message is never sent!
+                resp: RoomSendResponse = await self.matrix.room_send(
+                    room_id=self.mx_rid,
+                    message_type="m.room.message",
+                    content=content
+                )
+            except Exception as e:
+                await self.send_error_xmpp(
+                    f"Could not bridge message because of Matrix error of type {type(e)}\n{e}",
+                    stanza_id, msg_from, body
+                )
+                return
+
+            if type(resp) == RoomSendError:
+                await self.send_error_xmpp(
+                    f"Could not bridge, got back a room send error\n{resp}",
+                    stanza_id, msg_from, body
+                )
+                return
+
+            self.xmpp['xep_0333'].send_marker(
+                mto=self.muc_jid_str,
+                id=stanza_id,
+                mtype="groupchat",
+                marker="displayed",
+                mfrom=self.xmpp.boundjid.bare
+            )
+
+            if not attachment_url:
                 try:
-                    resp: RoomSendResponse = await self.matrix.room_send(
-                        room_id=self.mx_rid,
-                        message_type="m.room.message",
-                        content={
-                            "msgtype": f"m.{main_type if main_type in ['image', 'video', 'audio'] else 'file'}",
-                            "body": f"{msg['from'].resource}: sent a(n) {mime_type}{caption}",
-                            "format": "org.matrix.custom.html",
-                            "formatted_body": (
-                                f"<strong data-mx-profile-fallback>{matrix_displayname}: </strong> sent a(n) "
-                                f"{html.escape(mime_type, quote=False)}"
-                                f"{formatted_caption}"
-                            ),
-                            "url": f"mxc://{self.http_domain}/{file_id}",
-                            "info": {"mimetype": mime_type},
-                            "filename": filename,
-                            "external_url": attachment_url,
-                            "com.beeper.per_message_profile": {
-                                "id": str(msg['from']),
-                                "displayname": msg['from'].resource,
-                                "has_fallback": True,
-                            },
-                            ** (
-                                {
-                                    "m.mentions": {
-                                        "user_ids": [
-                                            replyto_mxid,
-                                        ],
-                                    },
-                                } if replyto_mxid else {}
-                            ),
-                            ** (
-                                {
-                                    "m.relates_to": {
-                                        "m.in_reply_to": {
-                                            "event_id": matrix_replyto_id
-                                        },
-                                    },
-                                } if matrix_replyto_id else {}
-                            ),
-                        },
+                    await self.db.insert_message_mapping(
+                        stanza_id,
+                        msg['id'],
+                        resp.event_id,
+                        body,
+                        msg['from'],
+                        occupant_id
                     )
+
+                except UniqueViolation as _:
+                    # this is working as intended as to not duplicate messages
+                    return
                 except Exception as e:
                     await self.send_error_xmpp(
-                        f"Could not bridge message because of Matrix error of type {type(e)}\n{e}",
+                        f"could not bridge message because of database error of type {type(e)}\n{e}",
                         stanza_id, msg_from, body
                     )
                     return
 
-                if type(resp) == RoomSendError:
-                    await self.send_error_xmpp(
-                        f"Could not bridge, got back a room send error\n{resp}",
-                        stanza_id, msg_from, body
-                    )
-                    return
-
-                self.xmpp['xep_0333'].send_marker(
-                    mto=self.muc_jid_str,
-                    id=stanza_id,
-                    mtype="groupchat",
-                    marker="displayed",
-                    mfrom=self.xmpp.boundjid.bare
-                )
+            else:  # if attachment_url
 
                 try:
                     await self.db.set_mtrx_eventid(resp.event_id, stanza_id)
@@ -742,6 +685,12 @@ class KoishiRoom:
                         stanza_id, msg_from, body
                     )
                     return
+
+            if xmpp_replace_id:
+                try:
+                    await self.db.insert_edit_mapping(stanza_id, xmpp_replace_id)
+                except Exception as e:
+                    return  # whatever
 
     async def handle_xmpp_moderation(self, msg):
         if self.matrix is None:
