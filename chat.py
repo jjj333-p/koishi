@@ -242,7 +242,7 @@ class KoishiRoom:
         """
         callback for handling any sort of recoverable muc disconnect.
 
-        reason: optional string that will be shown to the matrix side indicating why the 
+        reason: optional string that will be shown to the matrix side indicating why the
             server was disconnected
         """
 
@@ -833,8 +833,12 @@ class KoishiRoom:
             }
         )
 
-    async def handle_matrix_text_message(self, room: MatrixRoom, event: RoomMessageText):
-
+    def _prepare_matrix_inbound(self, room: MatrixRoom, event) -> tuple[str, JID, str] | None:
+        """
+        Validates initialization state and parses inbound Matrix events.
+        Returns a tuple of (user_jid, bridged_muc_jid, sanitized_body)
+        or None if the event should be ignored.
+        """
         if not self.matrix:
             raise RuntimeError("Matrix not yet initialized")
         if not self.xmpp:
@@ -842,7 +846,7 @@ class KoishiRoom:
 
         # temporary until appservice is used
         if event.sender == self.matrix.mxid:
-            return
+            return None
 
         user_jid = f"{event.sender[1:].replace(':', '_')}@{self.xmpp.boundjid.bare}"
 
@@ -850,7 +854,6 @@ class KoishiRoom:
             self.muc_jid_str,
             room.user_name(event.sender) or event.sender
         )
-        new_bridged_nick = new_bridged_muc_jid.resource
 
         matrix_content = event.source.get('content', {})
 
@@ -858,12 +861,26 @@ class KoishiRoom:
             matrix_content = matrix_content["m.new_content"]
 
         formatted_body = matrix_content.get('formatted_body')
+
+        # Use getattr as a safe fallback in case event.body doesn't exist on all event types
         body_for_xmpp = (
             matrix_html_to_xep0393(formatted_body)
             if matrix_content.get('format') == "org.matrix.custom.html" and formatted_body
-            else matrix_content.get('body', event.body)
+            else matrix_content.get('body', getattr(event, 'body', ''))
         )
+
         sanitized_body = util.illegal_xml_chars_regex.sub('', body_for_xmpp)
+
+        return user_jid, new_bridged_muc_jid, sanitized_body
+
+    async def handle_matrix_text_message(self, room: MatrixRoom, event: RoomMessageText):
+
+        prep = self._prepare_matrix_inbound(room, event)
+        if not prep:
+            return
+
+        user_jid, new_bridged_muc_jid, sanitized_body = prep
+        new_bridged_nick = new_bridged_muc_jid.resource
 
         # get relation, related event id, and type of relation
         mx_relation = event.source \
@@ -983,31 +1000,13 @@ class KoishiRoom:
                 )
 
     async def handle_matrix_media_message(self, room: MatrixRoom, event: RoomMessageMedia) -> None:
-        if not self.matrix:
-            raise RuntimeError("Matrix not yet initialized")
-        if not self.xmpp:
-            raise RuntimeError("XMPP not yet initialized")
 
-        # temporary until appservice is used
-        if event.sender == self.matrix.mxid:
+        prep = self._prepare_matrix_inbound(room, event)
+        if not prep:
             return
 
-        user_jid = f"{event.sender[1:].replace(':', '_')}@{self.xmpp.boundjid.bare}"
-
-        new_bridged_muc_jid = util.escape_nickname(
-            self.muc_jid_str,
-            room.user_name(event.sender) or event.sender
-        )
+        user_jid, new_bridged_muc_jid, sanitized_body = prep
         new_bridged_nick = new_bridged_muc_jid.resource
-
-        matrix_content = event.source.get('content', {})
-        formatted_body = matrix_content.get('formatted_body')
-        body_for_xmpp = (
-            matrix_html_to_xep0393(formatted_body)
-            if matrix_content.get('format') == "org.matrix.custom.html" and formatted_body
-            else matrix_content.get('body', event.body)
-        )
-        sanitized_body = util.illegal_xml_chars_regex.sub('', body_for_xmpp)
 
         media_id: str = str(uuid.uuid4())
         filetype: str = event.source.get('content', {}).get('info', {}).get(
@@ -1017,7 +1016,7 @@ class KoishiRoom:
             (
                 raw_mx_filename or
                 sanitized_body.split('/')[-1] or
-                f"unknown{mimetypes.guess_extension(type=filetype, strict=False) or ".bin"}"
+                f"unknown{mimetypes.guess_extension(type=filetype, strict=False) or '.bin'}"
             )
         )
 
