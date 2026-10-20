@@ -1162,7 +1162,7 @@ class KoishiRoom:
                     event.event_id, event.sender
                 )
 
-    async def handle_matrix_receipt(self, room: MatrixRoom, event: Receipt):
+    async def handle_matrix_receipt(self, _: MatrixRoom, event: Receipt):
         if not self.matrix:
             raise RuntimeError("Matrix not yet initialized")
         if not self.xmpp:
@@ -1205,7 +1205,7 @@ class KoishiRoom:
         except Exception as e:
             print(f"Could not send read receipt: {type(e).__name__}: {e}")
 
-    async def handle_matrix_redaction(self, room: MatrixRoom, event: RedactionEvent):
+    async def handle_matrix_redaction(self, _: MatrixRoom, event: RedactionEvent):
         if not self.matrix:
             raise RuntimeError("Matrix not yet initialized")
         if not self.xmpp:
