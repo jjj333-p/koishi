@@ -33,6 +33,8 @@ class KoishiRoom:
 
         self.muc_jid_str: str = mappingJSON.get("xmpp")
         self.muc_jid: JID = JID(self.muc_jid_str)
+        self.our_muc_participant: JID = JID(
+            f"{self.muc_jid_str}/{xmpp_side.display_name}")
 
         self.http_domain = http_domain
 
@@ -218,6 +220,21 @@ class KoishiRoom:
 
         self.ready.set()
 
+    async def send_error_xmpp(self, error_str: str, stanza_id: str, reply_jid: JID | None, fallback_txt: str = '') -> None:
+        err_id = str(uuid.uuid4())
+        err_msg = self.xmpp['xep_0461'].make_reply(
+            reply_jid or self.our_muc_participant,
+            stanza_id,
+            fallback_txt,
+            mto=self.muc_jid,
+            mbody=error_str,
+            mtype='groupchat',
+            mfrom=self.xmpp.boundjid.bare,
+        )
+        err_msg.set_id(err_id)
+        self.xmpp_error_ids.add(err_id)
+        err_msg.send()
+
     async def handle_muc_disconnect(self, reason: str | None):
         """
         callback for handling any sort of recoverable muc disconnect.
@@ -254,7 +271,7 @@ class KoishiRoom:
 
         puppet_mxid = self.bridged_jids.get(str(receiver_jid))
 
-        # closure for consistent error handling
+        # not using the generic send error because this one cant be a reply
         def send_error(error_str: str) -> None:
             err_id = str(uuid.uuid4())
             err_msg = self.xmpp.make_message(
@@ -381,22 +398,6 @@ class KoishiRoom:
             # if its in the map can short circut regardless of the return
             return
 
-        # closure for consistent error handling
-        async def send_error(error_str: str, fallback_txt: str = '') -> None:
-            err_id = str(uuid.uuid4())
-            err_msg = self.xmpp['xep_0461'].make_reply(
-                msg_from,
-                stanza_id,
-                fallback_txt,
-                mto=msg_from.bare,
-                mbody=error_str,
-                mtype='groupchat',
-                mfrom=self.xmpp.boundjid.bare,
-            )
-            err_msg.set_id(err_id)
-            self.xmpp_error_ids.add(err_id)
-            err_msg.send()
-
         async with self.xmpp_queue_lock:
 
             if msg['id'] in self.xmpp_error_ids:
@@ -452,8 +453,9 @@ class KoishiRoom:
                             )
                         except Exception as e:
                             # Log error or notify XMPP that redaction failed
-                            await send_error(
-                                f"Matrix error during retraction: {type(e).__name__}: {e}"
+                            await self.send_error_xmpp(
+                                f"Matrix error during retraction: {type(e).__name__}: {e}",
+                                stanza_id, msg_from,
                             )
 
                     # Catch any errors from our background cleanup tasks
@@ -582,16 +584,16 @@ class KoishiRoom:
                         }
                     )
                 except Exception as e:
-                    await send_error(
+                    await self.send_error_xmpp(
                         f"Could not bridge message because of Matrix error of type {type(e)}\n{e}",
-                        body
+                        stanza_id, msg_from, body
                     )
                     return
 
                 if type(resp) == RoomSendError:
-                    await send_error(
+                    await self.send_error_xmpp(
                         f"Could not bridge, got back a room send error\n{resp}",
-                        body
+                        stanza_id, msg_from, body
                     )
                     return
 
@@ -619,9 +621,9 @@ class KoishiRoom:
                     # this is working as intended as to not duplicate messages
                     return
                 except Exception as e:
-                    await send_error(
+                    await self.send_error_xmpp(
                         f"could not bridge message because of database error of type {type(e)}\n{e}",
-                        body
+                        stanza_id, msg_from, body
                     )
                     return
 
@@ -655,9 +657,9 @@ class KoishiRoom:
                     return
 
                 except Exception as e:
-                    await send_error(
+                    await self.send_error_xmpp(
                         f"could not bridge message because of database error of type {type(e)}\n{e}",
-                        body
+                        stanza_id, msg_from, body
                     )
                     return
 
@@ -711,16 +713,16 @@ class KoishiRoom:
                         },
                     )
                 except Exception as e:
-                    await send_error(
+                    await self.send_error_xmpp(
                         f"Could not bridge message because of Matrix error of type {type(e)}\n{e}",
-                        body
+                        stanza_id, msg_from, body
                     )
                     return
 
                 if type(resp) == RoomSendError:
-                    await send_error(
+                    await self.send_error_xmpp(
                         f"Could not bridge, got back a room send error\n{resp}",
-                        body
+                        stanza_id, msg_from, body
                     )
                     return
 
@@ -735,9 +737,9 @@ class KoishiRoom:
                 try:
                     await self.db.set_mtrx_eventid(resp.event_id, stanza_id)
                 except Exception as e:
-                    await send_error(
+                    await self.send_error_xmpp(
                         f"could not bridge message because of database error of type {type(e)}\n{e}",
-                        body
+                        stanza_id, msg_from, body
                     )
                     return
 
@@ -768,22 +770,6 @@ class KoishiRoom:
         by_id = moderated.get('occupant-id', {}).get('id', 'unknown')
         reason = retract['reason']
 
-        # closure for consistent error handling
-        async def send_error(error_str: str, fallback_txt: str = '') -> None:
-            err_id = str(uuid.uuid4())
-            err_msg = self.xmpp['xep_0461'].make_reply(
-                msg_from,
-                stanza_id,
-                fallback_txt,
-                mto=msg_from.bare,
-                mbody=error_str,
-                mtype='groupchat',
-                mfrom=self.xmpp.boundjid.bare,
-            )
-            err_msg.set_id(err_id)
-            self.xmpp_error_ids.add(err_id)
-            err_msg.send()
-
         async with self.xmpp_queue_lock:
 
             # delete record in db
@@ -793,8 +779,10 @@ class KoishiRoom:
                 result = await self.db.delete_media(stanza_id=stanza_id)
             except Exception as e:
                 # If the DB fails, we still try to inform XMPP that bridging failed
-                await send_error(
-                    f"Bridge DB error during moderation: {type(e).__name__}: {e}")
+                await self.send_error_xmpp(
+                    f"Bridge DB error during moderation: {type(e).__name__}: {e}",
+                    stanza_id, msg_from
+                )
                 return
 
             if not result:
@@ -824,8 +812,9 @@ class KoishiRoom:
                     )
                 except Exception as e:
                     # Log error or notify XMPP that redaction failed
-                    await send_error(
-                        f"Matrix error during moderation: {type(e).__name__}: {e}"
+                    await self.send_error_xmpp(
+                        f"Matrix error during moderation: {type(e).__name__}: {e}",
+                        stanza_id, msg_from
                     )
 
             # catch any fs error
@@ -833,8 +822,9 @@ class KoishiRoom:
                 try:
                     await del_task
                 except Exception as e:
-                    await send_error(
-                        f"Bridge fs error during moderation: {type(e).__name__}: {e}"
+                    await self.send_error_xmpp(
+                        f"Bridge fs error during moderation: {type(e).__name__}: {e}",
+                        stanza_id, msg_from
                     )
 
     async def join_xmpp_puppet_for_matrix(self, mxid: str, jid: str, nick: str, join_anyways: bool):
@@ -873,6 +863,26 @@ class KoishiRoom:
             self.cached_bridged_jnics[mxid] = nick
             self.bridged_jnics.add(nick)
             self.bridged_jids[jid] = mxid
+
+    async def send_error_matrix(self, error_str: str, event_id: str, mention_mxid: str,):
+        await self.matrix.room_send(
+            room_id=self.mx_rid,
+            message_type="m.room.message",
+            content={
+                "msgtype": "m.text",
+                "m.mentions": {
+                    "user_ids": [
+                        mention_mxid
+                    ]
+                },
+                "m.relates_to": {
+                    "m.in_reply_to": {
+                        "event_id": event_id
+                    }
+                },
+                "body": error_str,
+            }
+        )
 
     async def handle_matrix_text_message(self, room: MatrixRoom, event: RoomMessageText):
 
@@ -916,26 +926,6 @@ class KoishiRoom:
         mx_relation_type = mx_relation \
             .get("rel_type", "reply" if mx_relation_id is not None else None)
 
-        async def send_error(error_str: str):
-            await self.matrix.room_send(
-                room_id=room.room_id,
-                message_type="m.room.message",
-                content={
-                    "msgtype": "m.text",
-                    "m.mentions": {
-                        "user_ids": [
-                            event.sender
-                        ]
-                    },
-                    "m.relates_to": {
-                        "m.in_reply_to": {
-                            "event_id": event.event_id
-                        }
-                    },
-                    "body": error_str,
-                }
-            )
-
         async with self.matrix_queue_lock:
             # hold onto events until they can be bridged
             await self.ready.wait()
@@ -946,15 +936,18 @@ class KoishiRoom:
                     event.body.startswith("!join")
                 )
             except TimeoutError as _:
-                await send_error(
+                await self.send_error_matrix(
                     "Timed out trying to join puppet to MUC. "
                     "This is most often caused by your nickname being already in use. "
-                    "Please change your displayname and try again."
+                    "Please change your displayname and try again.",
+                    event.event_id, event.sender
                 )
                 return
             except Exception as e:
-                await send_error(
-                    f"Could not join puppet because of {type(e)} error:\n{e}")
+                await self.send_error_matrix(
+                    f"Could not join puppet because of {type(e)} error:\n{e}",
+                    event.event_id, event.sender
+                )
                 return
 
             create_row_task: asyncio.Task = asyncio.create_task(
@@ -1026,15 +1019,18 @@ class KoishiRoom:
                 # this is working as intended as to not duplicate messages
                 return
             except Exception as e:
-                await send_error(
-                    f"Could not bridge your message because of database error of type {type(e)}. error:\n{e}")
+                await self.send_error_matrix(
+                    f"Could not bridge your message because of database error of type {type(e)}. error:\n{e}",
+                    event.event_id, event.sender
+                )
                 return
 
             try:
                 message.send()
             except Exception as e:
-                await send_error(
-                    f"Could not bridge your message because matrix error of type {type(e)} error:\n{e}"
+                await self.send_error_matrix(
+                    f"Could not bridge your message because matrix error of type {type(e)} error:\n{e}",
+                    event.event_id, event.sender
                 )
 
     async def handle_matrix_media_message(self, room: MatrixRoom, event: RoomMessageMedia) -> None:
@@ -1076,26 +1072,6 @@ class KoishiRoom:
             )
         )
 
-        async def send_error(error_str: str):
-            await self.matrix.room_send(
-                room_id=room.room_id,
-                message_type="m.room.message",
-                content={
-                    "msgtype": "m.text",
-                    "m.mentions": {
-                        "user_ids": [
-                            event.sender
-                        ]
-                    },
-                    "m.relates_to": {
-                        "m.in_reply_to": {
-                            "event_id": event.event_id
-                        }
-                    },
-                    "body": error_str,
-                }
-            )
-
         async with self.matrix_queue_lock:
             # hold onto events until they can be bridged
             await self.ready.wait()
@@ -1106,15 +1082,18 @@ class KoishiRoom:
                     event.body.startswith("!join")
                 )
             except TimeoutError as _:
-                await send_error(
+                await self.send_error_matrix(
                     "Timed out trying to join puppet to MUC. "
                     "This is most often caused by your nickname being already in use. "
-                    "Please change your displayname and try again."
+                    "Please change your displayname and try again.",
+                    event.event_id, event.sender
                 )
                 return
             except Exception as e:
-                await send_error(
-                    f"Could not join puppet because of {type(e)} error:\n{e}")
+                await self.send_error_matrix(
+                    f"Could not join puppet because of {type(e)} error:\n{e}",
+                    event.event_id, event.sender
+                )
                 return
 
             create_row_task: asyncio.Task = asyncio.create_task(
@@ -1160,8 +1139,9 @@ class KoishiRoom:
                 # this is working as intended as to not duplicate messages
                 return
             except Exception as e:
-                await send_error(
-                    f"Could not bridge your message because of database error of type {type(e)}. error:\n{e}"
+                await self.send_error_matrix(
+                    f"Could not bridge your message because of database error of type {type(e)}. error:\n{e}",
+                    event.event_id, event.sender
                 )
                 return
 
@@ -1229,8 +1209,9 @@ class KoishiRoom:
             try:
                 message.send()
             except Exception as e:
-                await send_error(
-                    f"Could not bridge your message because of XMPP error of type {type(e)}. error:\n{e}"
+                await self.send_error_matrix(
+                    f"Could not bridge your message because of XMPP error of type {type(e)}. error:\n{e}",
+                    event.event_id, event.sender
                 )
 
     async def handle_matrix_receipt(self, room: MatrixRoom, event: Receipt):
@@ -1286,33 +1267,14 @@ class KoishiRoom:
         if event.sender == self.matrix.mxid:
             return
 
-        async def send_error(error_str: str):
-            await self.matrix.room_send(
-                room_id=room.room_id,
-                message_type="m.room.message",
-                content={
-                    "msgtype": "m.text",
-                    "m.mentions": {
-                        "user_ids": [
-                            event.sender
-                        ]
-                    },
-                    "m.relates_to": {
-                        "m.in_reply_to": {
-                            "event_id": event.event_id
-                        }
-                    },
-                    "body": error_str,
-                }
-            )
-
         async with self.matrix_queue_lock:
             # delete record from db so that bridged media link is broken
             try:
                 result = await self.db.delete_media(event_id=event.redacts)
             except Exception as e:
-                await send_error(
-                    f"Could not bridge your redaction because of database error of type {type(e)}. error:\n{e}"
+                await self.send_error_matrix(
+                    f"Could not bridge your redaction because of database error of type {type(e)}. error:\n{e}",
+                    event.event_id, event.sender
                 )
                 return
 
@@ -1347,8 +1309,9 @@ class KoishiRoom:
                         ifrom=self.xmpp.boundjid.bare
                     )
                 except Exception as e:
-                    await send_error(
-                        f"Could not bridge your redaction because of xmpp error of type {type(e)}. error:\n{e}"
+                    await self.send_error_matrix(
+                        f"Could not bridge your redaction because of xmpp error of type {type(e)}. error:\n{e}",
+                        event.event_id, event.sender
                     )
                     return
 
@@ -1357,7 +1320,8 @@ class KoishiRoom:
                 try:
                     await del_task
                 except Exception as e:
-                    await send_error(
-                        f"Could not bridge your redaction because of filesystem error of type {type(e)}. error:\n{e}"
+                    await self.send_error_matrix(
+                        f"Could not bridge your redaction because of filesystem error of type {type(e)}. error:\n{e}",
+                        event.event_id, event.sender
                     )
                     return
