@@ -5,7 +5,6 @@ Licensed as AGPL 3.0
 Distributed as-is and without warranty
 """
 import asyncio
-from typing import Optional
 
 # matrix library
 from nio import AsyncClient, MatrixRoom, RoomMessageText, RoomMessageMedia, RoomMessageNotice,  ReceiptEvent, RedactionEvent
@@ -17,7 +16,7 @@ class KoishiMatrixClient:
         self.mxid = mxid
         self.password = password
 
-        self.client: Optional[AsyncClient] = None
+        self.client: AsyncClient | None = None
         self.connected = asyncio.Event()
 
         # Store background tasks
@@ -150,7 +149,7 @@ class KoishiMatrixClient:
         return room.user_name(user_id)
 
     @property
-    def access_token(self) -> Optional[str]:
+    def access_token(self) -> str | None:
         """Get the access token from the nio client"""
         if not self.client:
             return None
