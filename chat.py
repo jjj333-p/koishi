@@ -81,7 +81,7 @@ class KoishiRoom:
         )
 
     async def join_muc_with_backoff(self, reason: str | None = None):
-        resp: RoomSendResponse | None = None
+        resp: RoomSendResponse | RoomSendError | None = None
 
         rejoined = False
         backoff_secs = 30
@@ -136,8 +136,8 @@ class KoishiRoom:
                 body = self.rejoin_msg(attempt, backoff_secs, reason)
 
                 try:
-                    if resp is None:
-                        await self.matrix.room_send(
+                    if resp is None or type(resp) == RoomSendError:
+                        resp = await self.matrix.room_send(
                             room_id=self.mx_rid,
                             message_type="m.room.message",
                             content={
