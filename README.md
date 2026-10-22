@@ -5,11 +5,15 @@ The fair and benevolent bridge project. Her jealousy was Parsee's weakness, but 
 In all seriousness, Koishi is a Matrix room <-> XMPP MUC bridge, picking up where [Parsee Bridge](https://foundry.fsky.io/kappachat/Parsee) left off, more ambitious in terms of features, 
 less [NIH syndrome](https://www.joelonsoftware.com/2001/10/14/in-defense-of-not-invented-here-syndrome/). 
 
-#### Support Room:
+### Support Room:
 
 **XMPP:** [koishi@group.pain.agency](xmpp:koishi@group.pain.agency?join)
 
 **Matrix:** [#koishi:4d2.org](https://matrix.to/#/#koishi:4d2.org)
+
+### Tip me:
+
+[pain.agency/tip](https://pain.agency/tip)
 
 ### This project is in very early development, you likely can get it working, however expect things to be broken or missing, and rough edges!!
 
