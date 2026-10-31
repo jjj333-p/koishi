@@ -526,6 +526,11 @@ class KoishiRoom:
                 msg['fallbacks']
             )
 
+            is_emote = body.startswith("/me ")
+
+            if is_emote:
+                body = body[4:]
+
             matrix_displayname = html.escape(msg['from'].resource, quote=False)
             matrix_body = f"{msg['from'].resource}: {body}"
             matrix_formatted_body = (
@@ -568,7 +573,7 @@ class KoishiRoom:
                 }
 
             if not attachment_url:
-                content["msgtype"] = "m.text"
+                content["msgtype"] = "m.emote" if is_emote else "m.text"
                 content["body"] = f"* {matrix_body}" if matrix_replace_id else matrix_body
                 content["formatted_body"] = f"* {matrix_formatted_body}" if matrix_replace_id else matrix_formatted_body
             else:
