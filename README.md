@@ -55,6 +55,48 @@ Create a file login.json that looks like this.
 ```
 
 ----
+## Running with Docker (optional)
+
+An alternative way to run this project without having to install python or all the dependencies is Docker.
+ Install docker here: https://docs.docker.com/get-docker/
+
+CREATE YOUR CONFIG:
+
+Koishi reads its settings from a file called `login.json` in the project folder (see the Configuration section above for what goes in it). Create it before you continue.
+
+`login.json` holds passwords, so it is deliberately not copied into the Docker image (see `.dockerignore`). You give it to the container when you start it,(check HOW TO RUN below)
+
+Use your Postgres and XMPP servers' real hostnames or IPs in login.json. Inside a container, localhost means the container itself, so it can't reach services on your host machine.
+
+BUILD THE IMAGE:
+
+use the command 
+
+```
+docker build -t koishi .
+ 
+```
+  
+
+This step is not needed every time you want to run a container. only needed again if any changes are made to the Dockerfile or to the code files but docker will make sure to use cache where no changes are made.
+
+
+HOW TO RUN:
+
+use the command
+
+``` 
+docker run --rm -p 4567:4567 -v "$(pwd)/login.json:/app/login.json:ro" koishi 
+
+```
+
+
+
+
+This will create a running container of the image you just created. 
+- the "4567:4567" is mapping the host's port 4567 to the container's port 4567.
+
+----
 
 ## Currently Supported Features:
 

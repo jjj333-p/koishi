@@ -1,0 +1,9 @@
+login.json
+.git
+__pycache__
+*.pyc
+.venv
+cache
+log.txt
+.idea
+
