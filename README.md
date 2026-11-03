@@ -53,47 +53,44 @@ Create a file login.json that looks like this.
 ----
 ## Running with Docker (optional)
 
-This is an alternative to installing Python and the dependencies on your machine yourself. Docker packages Koishi and everything it needs (Python 3.13.5 and the pip packages) into a self-contained "image". You only need [Docker](https://docs.docker.com/get-docker/) installed.
+An alternative way to run this project without having to install python or all the dependencies is Docker.
+ Install docker here: https://docs.docker.com/get-docker/
 
-Docker support is community-contributed, so if something breaks, please open an issue.
-
-### 1. Create your config
+CREATE YOUR CONFIG:
 
 Koishi reads its settings from a file called `login.json` in the project folder (see the Configuration section above for what goes in it). Create it before you continue.
 
-`login.json` holds passwords, so it is deliberately **not** copied into the Docker image (see `.dockerignore`). You give it to the container when you start it, in step 3.
+`login.json` holds passwords, so it is deliberately not copied into the Docker image (see `.dockerignore`). You give it to the container when you start it,(check HOW TO RUN below)
 
-### 2. Build the image
+Use your Postgres and XMPP servers' real hostnames or IPs in login.json. Inside a container, localhost means the container itself, so it can't reach services on your host machine.
 
-From the project folder, run:
+BUILD THE IMAGE:
+
+use the command 
 
 ```
 docker build -t koishi .
+ 
+```
+  
+
+This step is not needed every time you want to run a container. only needed again if any changes are made to the Dockerfile or to the code files but docker will make sure to use cache where no changes are made.
+
+
+HOW TO RUN:
+
+use the command
+
+``` 
+docker run --rm -p 4567:4567 -v "$(pwd)/login.json:/app/login.json:ro" koishi 
+
 ```
 
-This reads the `Dockerfile` and builds an image named `koishi`. You only need to repeat it when the code changes.
 
-### 3. Run it
 
-```
-docker run --rm -p 4567:4567 -v "$(pwd)/login.json:/app/login.json:ro" koishi
-```
 
-What this does:
-- `--rm` deletes the container when it stops, so stopped containers don't pile up.
-- `-p 4567:4567` makes the media webserver (which listens on port 4567 inside the container) reachable on port 4567 of your machine.
-- `-v "$(pwd)/login.json:/app/login.json:ro"` shares your `login.json` with the container as a read-only file. The file stays on your machine and never becomes part of the image.
-- `koishi` is the image you built in step 2.
-
-Press `Ctrl+C` to stop it. To keep it running in the background, add `-d` and a name: `docker run -d --name koishi-bridge -p 4567:4567 -v "$(pwd)/login.json:/app/login.json:ro" koishi`. Then use `docker logs koishi-bridge` to see its output.
-
-### Things to know
-
-- **Koishi still needs a PostgreSQL server and an XMPP server it can reach.** Docker only runs Koishi itself; it does not start these for you.
-- **Do not use `localhost` for those servers in `login.json`.** Inside a container, `localhost` means the container itself, not your computer, so Koishi can't find your database that way. Use the server's real hostname or IP address instead.
-- **"No such file or directory: 'login.json'"** means the `-v` part of the run command is missing, or the command was run from a folder that doesn't contain `login.json`.
-- **"Connection refused"** means Koishi started fine but can't reach the database or XMPP server at the address in `login.json`.
-- The image uses Python 3.13.5, matching the version the maintainer runs in production.
+This will create a running container of the image you just created. 
+- the "4567:4567" is mapping the host's port 4567 to the container's port 4567.
 
 ----
 

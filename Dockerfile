@@ -1,4 +1,4 @@
-FROM python:3.13.5
+FROM python:3.13.5-slim
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
